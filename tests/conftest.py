@@ -20,15 +20,31 @@ def temp_dir():
 
 
 @pytest.fixture
-def temp_config_path(temp_dir):
+def source_dir(temp_dir):
+    """Create a separate source directory for scanning tests."""
+    src = temp_dir / "source"
+    src.mkdir()
+    return src
+
+
+@pytest.fixture
+def db_dir(temp_dir):
+    """Create a separate directory for database files."""
+    db = temp_dir / "db"
+    db.mkdir()
+    return db
+
+
+@pytest.fixture
+def temp_config_path(temp_dir, source_dir, db_dir):
     """Create a valid config.yaml in a temp directory."""
     config = {
         "firm": {"name": "Test Firm"},
         "paths": {
-            "source_drive": str(temp_dir),
+            "source_drive": str(source_dir),
             "lan_destination": "\\\\192.168.10.10\\test$",
             "log_directory": str(temp_dir / "logs"),
-            "database_path": str(temp_dir / "manifest.db"),
+            "database_path": str(db_dir / "manifest.db"),
         },
         "wol": {"enabled": False},
         "cloud_backup": {"enabled": False},
@@ -46,9 +62,9 @@ def temp_config(temp_config_path):
 
 
 @pytest.fixture
-def temp_db(temp_dir):
-    """Create a ManifestDB in a temp directory."""
-    db_path = temp_dir / "manifest.db"
+def temp_db(db_dir):
+    """Create a ManifestDB in a separate directory."""
+    db_path = db_dir / "manifest.db"
     db = ManifestDB(db_path)
     yield db
     db.close()
