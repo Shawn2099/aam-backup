@@ -2,6 +2,7 @@
 
 import os
 import smtplib
+import time
 import keyring
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -14,10 +15,14 @@ from prefect.task_runners import ThreadPoolTaskRunner
 
 from core.config_loader import load_config
 from core.logging_setup import configure_logging
+from core.manifest_db import ManifestDB
 from tasks.cloud_task import cloud_backup_task
 from tasks.config_task import load_config_task
+from tasks.config_version_task import version_config_task
 from tasks.lan_task import lan_backup_task
+from tasks.log_backup_task import backup_logs_cloud_task
 from tasks.manifest_backup_task import backup_manifest_db_task
+from tasks.metrics_task import collect_metrics_task
 from tasks.preflight_task import preflight_task
 from tasks.scan_task import scan_task
 from tasks.verification_task import verify_cloud_integrity_task
@@ -130,12 +135,21 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
     """
     logger = get_run_logger()
 
+    # Start timer for metrics
+    start_time = time.time()
+
     # Configure logging
     log_dir = Path(os.environ.get("BACKUP_LOG_DIR", "logs"))
     configure_logging(log_dir)
 
     # Task 1: Load configuration
     config, gcs_key_path = load_config_task(config_path)
+
+    # Task 1b: Version config before run
+    try:
+        version_config_task(config_path, config.paths.log_directory)
+    except Exception as e:
+        logger.warning(f"Config versioning failed (non-critical): {e}")
 
     # Task 2: Pre-flight checks
     config = preflight_task(config.model_dump())
@@ -152,6 +166,32 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
     if not scan_result.has_changes:
         logger.info("No changes detected — backup complete")
+
+        # Check for extended "no changes" period
+        threshold = config.alerts.no_changes_warning_days
+        if threshold > 0:
+            from datetime import datetime, timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(days=threshold)
+            cutoff_iso = cutoff.isoformat()
+
+            # Check if any file was recently backed up
+            db = ManifestDB(config.paths.database_path)
+            try:
+                all_entries = db.get_all_entries()
+                recent_backup = any(
+                    (e.last_backed_up_lan or "") > cutoff_iso or
+                    (e.last_backed_up_cloud or "") > cutoff_iso
+                    for e in all_entries.values()
+                )
+                if not recent_backup and all_entries:
+                    logger.warning(
+                        f"No file changes detected in {threshold}+ days. "
+                        f"Scanner may be misconfigured or source drive unchanged. "
+                        f"Total files in manifest: {len(all_entries)}"
+                    )
+            finally:
+                db.close()
+
         return "COMPLETE"
 
     # Tasks 4 & 5: Concurrent LAN and cloud backup
@@ -203,19 +243,63 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         logger.warning(f"manifest.db backup failed (non-critical): {e}")
 
     # Verify cloud integrity after successful cloud backup
+    cloud_mismatches = 0
+    cloud_missing = 0
     if cloud_status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
         try:
             verify_result = verify_cloud_integrity_task(config, gcs_key_path)
+            cloud_mismatches = verify_result.get("mismatches", 0)
+            cloud_missing = verify_result.get("missing", 0)
             if verify_result.get("status") == "MISMATCH":
                 logger.warning(
                     f"Cloud integrity check found mismatches: "
-                    f"{verify_result.get('mismatches', 0)} mismatches, "
-                    f"{verify_result.get('missing', 0)} missing"
+                    f"{cloud_mismatches} mismatches, "
+                    f"{cloud_missing} missing"
                 )
             else:
                 logger.info(f"Cloud integrity check passed: {verify_result.get('matches', 0)} files verified")
         except Exception as e:
             logger.warning(f"Cloud integrity verification failed (non-critical): {e}")
+
+    # Sync log files to cloud for disaster recovery
+    try:
+        backup_logs_cloud_task(
+            config.paths.log_directory,
+            gcs_key_path,
+            config.cloud_backup.enabled,
+            config.cloud_backup.bucket,
+            config.cloud_backup.remote_path,
+            config.cloud_backup.gcs_location,
+        )
+    except Exception as e:
+        logger.warning(f"Log backup to cloud failed (non-critical): {e}")
+
+    # Collect metrics for trend analysis
+    try:
+        duration = time.time() - start_time
+        from prefect.context import get_run_context
+        ctx = get_run_context()
+        flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
+
+        collect_metrics_task(
+            log_directory=config.paths.log_directory,
+            flow_run_id=flow_run_id,
+            overall_status=overall,
+            lan_status=lan_status,
+            cloud_status=cloud_status,
+            scan_new=len(scan_result.new_files),
+            scan_modified=len(scan_result.modified_files),
+            scan_deleted=len(scan_result.deleted_files),
+            scan_unchanged=scan_result.unchanged_count,
+            lan_files_copied=lan_result.get("files_copied", 0),
+            lan_bytes_copied=lan_result.get("bytes_copied", 0),
+            lan_files_failed=lan_result.get("files_failed", 0),
+            cloud_mismatches=cloud_mismatches,
+            cloud_missing=cloud_missing,
+            duration_seconds=round(duration, 1),
+        )
+    except Exception as e:
+        logger.warning(f"Metrics collection failed (non-critical): {e}")
 
     return overall
 

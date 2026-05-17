@@ -190,6 +190,11 @@ class NotificationsConfig(BaseModel):
     weekly_summary_time: str = "08:00"
 
 
+class AlertsConfig(BaseModel):
+    no_changes_warning_days: int = Field(default=7, ge=1, le=365)
+    """If no file changes detected for this many days, log a warning."""
+
+
 class AppConfig(BaseModel):
     """Top-level application configuration."""
 
@@ -203,3 +208,4 @@ class AppConfig(BaseModel):
     cloud_credentials: CloudCredentialsConfig = Field(default_factory=CloudCredentialsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)

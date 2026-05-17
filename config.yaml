@@ -117,3 +117,9 @@ notifications:
   weekly_summary_enabled: true
   weekly_summary_day: "monday"
   weekly_summary_time: "08:00"
+
+# ═══════════════════════════════════════════════════
+# ALERTS
+# ═══════════════════════════════════════════════════
+alerts:
+  no_changes_warning_days: 7
