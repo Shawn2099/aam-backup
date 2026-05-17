@@ -26,6 +26,7 @@ from tasks.metrics_task import collect_metrics_task
 from tasks.preflight_task import preflight_task
 from tasks.scan_task import scan_task
 from tasks.verification_task import verify_cloud_integrity_task
+from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
 
 
 def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
@@ -150,6 +151,31 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         version_config_task(config_path, config.paths.log_directory)
     except Exception as e:
         logger.warning(f"Config versioning failed (non-critical): {e}")
+
+    # Task 1c: Create VSS snapshot if enabled
+    vss_result = None
+    vss_device_path = None
+    try:
+        if config.vss.enabled:
+            vss_result = create_vss_snapshot_task(
+                config.vss.drive_letter,
+                config.vss.fallback_on_failure,
+            )
+            vss_device_path = vss_result.get("device_path")
+            if vss_result.get("vss_enabled"):
+                # Override source drive with shadow copy path
+                config = config.model_copy(
+                    update={
+                        "paths": config.paths.model_copy(
+                            update={"source_drive": vss_result["source_path"]}
+                        )
+                    }
+                )
+                logger.info(f"Using VSS shadow copy as source: {vss_result['source_path']}")
+            else:
+                logger.info("Using direct source drive (VSS not used)")
+    except Exception as e:
+        logger.warning(f"VSS snapshot failed (non-critical): {e}")
 
     # Task 2: Pre-flight checks
     config = preflight_task(config.model_dump())
@@ -300,6 +326,14 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         )
     except Exception as e:
         logger.warning(f"Metrics collection failed (non-critical): {e}")
+
+    # Clean up VSS snapshot
+    if vss_device_path:
+        try:
+            delete_vss_snapshot_task(vss_device_path)
+            logger.info("VSS shadow copy deleted")
+        except Exception as e:
+            logger.warning(f"VSS cleanup failed: {e}")
 
     return overall
 

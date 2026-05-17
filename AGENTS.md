@@ -65,13 +65,13 @@ Soft delete, custom versioning, anomaly detection, canary files, integrity verif
 | 4 | `deploy/setup_email_notifications.py` → real Prefect automations | Critical | ✅ Done — creates EmailServerCredentials block + automations |
 | 5 | `install_services.bat` / `uninstall_services.bat` for deployment | Critical | ✅ Done — created in `deploy/` |
 | 6 | VSS for locked Tally/Winman files (if apps run overnight) | Important | Pending (client confirmation) |
-| 7 | Alerting on extended "no changes" periods | Important | Pending |
+| 7 | Alerting on extended "no changes" periods | Important | ✅ Done — `alerts.no_changes_warning_days` config + flow check |
 | 8 | `.env.example` for deployment documentation | Nice-to-have | ✅ Done |
 | 9 | UI `/health` endpoint for NSSM monitoring | Nice-to-have | ✅ Done |
-| 10 | Backup metrics collection (duration, throughput trends) | Nice-to-have | Pending |
-| 11 | Config versioning / backup | Nice-to-have | Pending |
-| 12 | Graceful shutdown handling | Nice-to-have | Pending |
-| 13 | Log files included in cloud backup | Nice-to-have | Pending |
+| 10 | Backup metrics collection (duration, throughput trends) | Nice-to-have | ✅ Done — `tasks/metrics_task.py`, JSONL per run |
+| 11 | Config versioning / backup | Nice-to-have | ✅ Done — `tasks/config_version_task.py`, keeps last 30 |
+| 12 | Graceful shutdown handling | Nice-to-have | Skipped — Prefect handles cleanup on normal cancellation |
+| 13 | Log files included in cloud backup | Nice-to-have | ✅ Done — `tasks/log_backup_task.py`, syncs to `_logs/` prefix |
 
 ## Key File Boundaries
 

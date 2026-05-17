@@ -74,6 +74,15 @@ wol:
   stability_wait_seconds: 30
 
 # ═══════════════════════════════════════════════════
+# VOLUME SHADOW COPY (VSS)
+# Set enabled: true if Tally/Winman run overnight
+# ═══════════════════════════════════════════════════
+vss:
+  enabled: false
+  drive_letter: "D"
+  fallback_on_failure: true
+
+# ═══════════════════════════════════════════════════
 # CLOUD BACKUP
 # ═══════════════════════════════════════════════════
 cloud_backup:

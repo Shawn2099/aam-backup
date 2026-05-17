@@ -107,6 +107,14 @@ class WolConfig(BaseModel):
         return v
 
 
+class VssConfig(BaseModel):
+    enabled: bool = False
+    """Use Volume Shadow Copy to back up locked files (Tally/Winman)."""
+    drive_letter: str = "D"
+    fallback_on_failure: bool = True
+    """If VSS creation fails, fall back to direct backup instead of failing."""
+
+
 class CloudBackupConfig(BaseModel):
     enabled: bool = True
     provider: str = "gcs"
@@ -204,6 +212,7 @@ class AppConfig(BaseModel):
     backup_scope: BackupScopeConfig = Field(default_factory=BackupScopeConfig)
     lan_backup: LanBackupConfig = Field(default_factory=LanBackupConfig)
     wol: WolConfig = Field(default_factory=WolConfig)
+    vss: VssConfig = Field(default_factory=VssConfig)
     cloud_backup: CloudBackupConfig = Field(default_factory=CloudBackupConfig)
     cloud_credentials: CloudCredentialsConfig = Field(default_factory=CloudCredentialsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
