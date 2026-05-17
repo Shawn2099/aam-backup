@@ -11,6 +11,7 @@ from core.logging_setup import configure_logging
 from tasks.cloud_task import cloud_backup_task
 from tasks.config_task import load_config_task
 from tasks.lan_task import lan_backup_task
+from tasks.preflight_task import preflight_task
 from tasks.scan_task import scan_task
 
 
@@ -25,9 +26,10 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
     Flow:
     1. Load and validate configuration
-    2. Scan source drive for changes
-    3. If changes detected: run LAN and cloud backup concurrently
-    4. Compute overall status
+    2. Run pre-flight checks
+    3. Scan source drive for changes
+    4. If changes detected: run LAN and cloud backup concurrently
+    5. Compute overall status
 
     Args:
         config_path: Path to config.yaml. Defaults to "config.yaml".
@@ -42,7 +44,10 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
     # Task 1: Load configuration
     config, gcs_key_path = load_config_task(config_path)
 
-    # Task 2: Scan drive
+    # Task 2: Pre-flight checks
+    config = preflight_task(config.model_dump())
+
+    # Task 3: Scan drive
     scan_result = scan_task(config, config.paths.database_path)
 
     logger.info(
@@ -56,7 +61,7 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         logger.info("No changes detected — backup complete")
         return "COMPLETE"
 
-    # Tasks 3 & 4: Concurrent LAN and cloud backup
+    # Tasks 4 & 5: Concurrent LAN and cloud backup
     lan_future = lan_backup_task.submit(config, scan_result, config.paths.database_path)
     cloud_future = cloud_backup_task.submit(
         config, gcs_key_path, scan_result, config.paths.database_path

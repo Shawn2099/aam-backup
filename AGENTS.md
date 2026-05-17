@@ -36,13 +36,13 @@ Soft delete, custom versioning, anomaly detection, canary files, integrity verif
 
 | Phase | Items | Status |
 |-------|-------|--------|
-| 1 — Foundation | Scaffolding, models, logging | Not started |
-| 2 — Core | Config loader, ManifestDB, scanner, WoL, Robocopy wrapper, Rclone wrapper | Not started |
-| 3 — Orchestration | Prefect tasks, flow definition, email automation | Not started |
-| 4 — UI | FastAPI status page (Alpine.js + Tailwind) | Not started |
-| 5 — Scripts | setup_credentials, validate_config, seed_cloud, test_connections, deploy scripts | Not started |
-| 6 — Tests | Unit + integration tests | Not started |
-| 7 — Pre-Flight | Disk space, GCS quota, connectivity checks | After core works |
+| 1 — Foundation | Scaffolding, models, logging | ✅ Done |
+| 2 — Core | Config loader, ManifestDB, scanner, WoL, Robocopy wrapper, Rclone wrapper | ✅ Done |
+| 3 — Orchestration | Prefect tasks, flow definition, email automation | ✅ Done |
+| 4 — UI | FastAPI status page (Alpine.js + Tailwind) | ✅ Done |
+| 5 — Scripts | setup_credentials, validate_config, seed_cloud, test_connections, deploy scripts | ✅ Done |
+| 6 — Tests | Unit + integration tests (88 tests, incremental) | ✅ Done |
+| 7 — Pre-Flight | Disk space, GCS quota, connectivity checks | Next |
 
 ## Key File Boundaries
 
