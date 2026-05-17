@@ -192,6 +192,22 @@ class ManifestDB:
         finally:
             session.close()
 
+    def get_all_entries(self) -> dict[str, FileManifest]:
+        """Load all manifest entries into memory as a dict.
+
+        Returns:
+            Dict mapping relative_path → FileManifest object.
+            Thread-safe read (no lock needed).
+
+        Use this for bulk lookups during scanning to avoid 200K+ individual queries.
+        """
+        session = self._get_session()
+        try:
+            rows = session.query(FileManifest).all()
+            return {entry.relative_path: entry for entry in rows}
+        finally:
+            session.close()
+
     def close(self):
         """Dispose the engine. Call when shutting down."""
         self._engine.dispose()

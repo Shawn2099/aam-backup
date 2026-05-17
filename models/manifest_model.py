@@ -1,6 +1,6 @@
 """SQLAlchemy model for the file manifest database."""
 
-from sqlalchemy import Column, Index, Integer, REAL, String, Text, create_engine, event
+from sqlalchemy import BigInteger, Column, Index, Integer, REAL, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
@@ -13,7 +13,7 @@ class FileManifest(Base):
 
     file_id = Column(Text, primary_key=True)
     relative_path = Column(Text, nullable=False, unique=True)
-    file_size = Column(Integer, nullable=False)
+    file_size = Column(BigInteger, nullable=False)
     last_modified_timestamp = Column(REAL, nullable=False)
     checksum = Column(Text, nullable=False, default="pending")
     last_seen_at = Column(Text, nullable=False)

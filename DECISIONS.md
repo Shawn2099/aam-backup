@@ -69,15 +69,36 @@ This file tracks every decision, change, and clarification made during planning 
   - Read access to `C:\BackupAgent\gcs_service_account.json` (GCS key)
   - Access to Windows Credential Manager for `BackupAgent_GCS` credential
 
-### Pre-Flight Check Thresholds
-- **Status:** To be defined when implementing Phase 7
-- **Planned checks:**
-  - LAN backup server disk space (must have enough for full D:\ mirror ~370GB)
-  - GCS bucket quota and accessibility
-  - Network connectivity to backup server and GCS
-  - Service account credential validation
-  - Source drive accessibility and read permissions
-  - Prefect server health check
+## P0 Fixes Completed (2026-05-18)
+
+### 1. Manifest Drift — Per-File Failure Tracking
+- **File:** `core/robocopy.py`
+- **Change:** Added `_parse_failed_files()` to extract failed file paths from Robocopy output. Manifest now only marks files that actually succeeded, not all changed files.
+- **Impact:** Accurate manifest state on partial failures. Failed files remain `pending` or retain previous checksum.
+
+### 2. `file_size` Column Overflow
+- **File:** `models/manifest_model.py`
+- **Change:** `Integer` → `BigInteger` for `file_size` column.
+- **Impact:** Supports files >2GB (max ~9.2 quintillion bytes vs ~2.1 billion).
+
+### 3. Email Notifications in `on_failure` Hook
+- **File:** `flow.py`
+- **Change:** Added `_send_failure_email()` using `smtplib` + `keyring` for credential retrieval. Wired into `_on_backup_failure` hook. Sends HTML + plain text emails.
+- **Impact:** Failure alerts sent immediately without relying on Prefect UI automation setup.
+
+### 4. Rclone Exit Code 5 → CLOUD_PARTIAL
+- **File:** `core/rclone.py`
+- **Change:** Exit code 5 mapped to `CLOUD_PARTIAL` instead of `CLOUD_FAILED`.
+- **Impact:** Prefect retries work correctly for transient network errors.
+
+### 5. Robocopy `/XJ` Flag
+- **File:** `core/robocopy.py`
+- **Change:** Added `/XJ` to Robocopy command to exclude junction points.
+- **Impact:** Prevents infinite loops from junction points and backs up only real files.
+
+### 6. Test Suite Verification
+- **Result:** 115 tests passing in 7.23s.
+- **Note:** ROS pytest plugins cause conflicts; run with `-p no:launch_testing` if needed.
 
 ## Architecture Decisions (From plan.md)
 

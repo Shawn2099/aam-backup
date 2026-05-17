@@ -4,13 +4,38 @@ import httpx
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 app = FastAPI(title="Backup Status")
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.cache = None  # Disable template caching
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint for NSSM monitoring and external tools.
+
+    Returns:
+        JSON with service status and timestamp.
+    """
+    prefect_api_url = "http://127.0.0.1:4200/api"
+    prefect_healthy = False
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{prefect_api_url}/health")
+            prefect_healthy = resp.status_code == 200
+    except Exception:
+        pass
+
+    status = "healthy" if prefect_healthy else "degraded"
+    return JSONResponse({
+        "status": status,
+        "prefect_api": "connected" if prefect_healthy else "unavailable",
+        "service": "backup-ui",
+    })
 
 
 @app.get("/", response_class=HTMLResponse)

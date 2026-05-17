@@ -145,6 +145,119 @@ def _write_filter_file(
     return filter_path
 
 
+def run_rclone_check(
+    config: AppConfig,
+    gcs_key_path: str,
+) -> dict:
+    """Run rclone check to verify source vs cloud destination integrity.
+
+    Compares source and destination files by size and hash.
+    Reports any mismatches or missing files.
+
+    Args:
+        config: Validated application configuration.
+        gcs_key_path: Path to GCS service account JSON key.
+
+    Returns:
+        Dict with check results: {"matches": int, "mismatches": int, "missing": int, "output": str}
+    """
+    cloud_config = config.cloud_backup
+    paths_config = config.paths
+    temp_dir = Path(paths_config.rclone_temp_directory)
+    job_id = "check"
+
+    config_path = None
+    filter_path = None
+
+    try:
+        config_path = _write_temp_config(temp_dir, job_id, gcs_key_path)
+        filter_path = _write_filter_file(
+            temp_dir, job_id,
+            config.backup_scope.exclude_folders,
+            config.backup_scope.exclude_extensions,
+            config.backup_scope.exclude_patterns,
+            paths_config.source_drive,
+        )
+
+        remote = f"gcs_backup:{cloud_config.bucket}/{cloud_config.remote_path}"
+        cmd = [
+            "rclone", "check",
+            paths_config.source_drive,
+            remote,
+            "--config", str(config_path),
+            "--filter-from", str(filter_path),
+            "--stats", "60s",
+            "--log-level", "INFO",
+            "--use-json-log",
+            "--one-way",  # Only check source → destination (not destination → source)
+        ]
+
+        logger.info(f"Running Rclone check: {paths_config.source_drive} vs {remote}")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=cloud_config.subprocess_timeout_seconds,
+        )
+
+        # Parse output for summary
+        output = result.stdout
+        matches = 0
+        mismatches = 0
+        missing = 0
+
+        for line in output.splitlines():
+            if "identical" in line.lower():
+                # rclone check outputs: "X files identical"
+                import re
+                match = re.search(r"(\d+)\s+files?\s+identical", line, re.IGNORECASE)
+                if match:
+                    matches = int(match.group(1))
+            elif "differ" in line.lower() or "mismatch" in line.lower():
+                match = re.search(r"(\d+)\s+files?\s+(?:differ|mismatch)", line, re.IGNORECASE)
+                if match:
+                    mismatches = int(match.group(1))
+            elif "missing" in line.lower():
+                match = re.search(r"(\d+)\s+files?\s+missing", line, re.IGNORECASE)
+                if match:
+                    missing = int(match.group(1))
+
+        # rclone check returns 0 if all OK, 1 if differences found
+        status = "OK" if result.returncode == 0 else "MISMATCH"
+
+        logger.info(f"Rclone check {status}: {matches} matches, {mismatches} mismatches, {missing} missing")
+
+        return {
+            "status": status,
+            "matches": matches,
+            "mismatches": mismatches,
+            "missing": missing,
+            "output": output,
+        }
+
+    except subprocess.TimeoutExpired:
+        logger.critical(f"Rclone check timed out after {cloud_config.subprocess_timeout_seconds}s")
+        return {"status": "TIMEOUT", "matches": 0, "mismatches": 0, "missing": 0, "output": ""}
+
+    except FileNotFoundError:
+        logger.critical("rclone.exe not found — not installed?")
+        return {"status": "ERROR", "matches": 0, "mismatches": 0, "missing": 0, "output": ""}
+
+    except OSError as e:
+        logger.critical(f"Rclone check failed with OS error: {e}")
+        return {"status": "ERROR", "matches": 0, "mismatches": 0, "missing": 0, "output": ""}
+
+    finally:
+        for path in [config_path, filter_path]:
+            if path and path.exists():
+                try:
+                    path.unlink()
+                    logger.debug(f"Cleaned up temp file: {path}")
+                except OSError as e:
+                    logger.critical(f"Failed to delete temp file {path}: {e} — Manual deletion required")
+
+
 def run_rclone(
     config: AppConfig,
     gcs_key_path: str,

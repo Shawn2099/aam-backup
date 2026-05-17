@@ -1,6 +1,10 @@
 """Prefect flow: nightly backup orchestration."""
 
 import os
+import smtplib
+import keyring
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 
 from prefect import flow
@@ -8,12 +12,72 @@ from prefect.logging import get_run_logger
 from prefect.tasks import exponential_backoff
 from prefect.task_runners import ThreadPoolTaskRunner
 
+from core.config_loader import load_config
 from core.logging_setup import configure_logging
 from tasks.cloud_task import cloud_backup_task
 from tasks.config_task import load_config_task
 from tasks.lan_task import lan_backup_task
+from tasks.manifest_backup_task import backup_manifest_db_task
 from tasks.preflight_task import preflight_task
 from tasks.scan_task import scan_task
+from tasks.verification_task import verify_cloud_integrity_task
+
+
+def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
+    """Send failure notification email using SMTP config from config.yaml."""
+    try:
+        config = load_config(config_path)
+        notif = config.notifications
+
+        if not notif.smtp_host or not notif.sender or not notif.recipients:
+            return  # Email not configured
+
+        # Retrieve SMTP password from Credential Manager
+        smtp_password = keyring.get_password("BackupAgent", notif.smtp_password_credential)
+        if not smtp_password:
+            return  # Credential not found
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"❌ Backup Failed — {config.firm.name}"
+        msg["From"] = notif.sender
+        msg["To"] = ", ".join(notif.recipients)
+
+        body_text = (
+            f"Backup Failure Notification\n"
+            f"{'=' * 40}\n\n"
+            f"Firm: {config.firm.name}\n"
+            f"Flow Run ID: {flow_run_id}\n"
+            f"Error: {error_message}\n\n"
+            f"Check Prefect UI for full details.\n"
+        )
+
+        body_html = f"""
+        <html><body>
+        <h2 style="color: red;">Backup Failure Notification</h2>
+        <table>
+            <tr><td><strong>Firm:</strong></td><td>{config.firm.name}</td></tr>
+            <tr><td><strong>Flow Run ID:</strong></td><td>{flow_run_id}</td></tr>
+            <tr><td><strong>Error:</strong></td><td><code>{error_message}</code></td></tr>
+        </table>
+        <p>Check Prefect UI for full details.</p>
+        </body></html>
+        """
+
+        msg.attach(MIMEText(body_text, "plain"))
+        msg.attach(MIMEText(body_html, "html"))
+
+        with smtplib.SMTP(notif.smtp_host, notif.smtp_port) as server:
+            server.starttls()
+            server.login(notif.smtp_username, smtp_password)
+            server.sendmail(notif.sender, notif.recipients, msg.as_string())
+
+    except Exception as e:
+        # Log but don't fail the hook — email is best-effort
+        try:
+            logger = get_run_logger()
+            logger.error(f"Failed to send failure email: {e}")
+        except Exception:
+            pass
 
 
 def _on_backup_failure(flow_obj, flow_run, state):
@@ -24,6 +88,10 @@ def _on_backup_failure(flow_obj, flow_run, state):
         f"Run ID: {flow_run.id}. "
         f"Check Prefect UI for details."
     )
+
+    # Send email notification (best-effort)
+    config_path = flow_run.parameters.get("config_path", "config.yaml")
+    _send_failure_email(config_path, str(flow_run.id), state.message or "Unknown error")
 
 
 def _on_backup_completion(flow_obj, flow_run, state):
@@ -123,6 +191,31 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
     if overall == "FAILED":
         raise RuntimeError(f"Both backup destinations failed: LAN={lan_status}, Cloud={cloud_status}")
+
+    # Backup manifest.db after successful backup
+    try:
+        backup_manifest_db_task(
+            config.paths.database_path,
+            config.paths.lan_destination,
+            config.cloud_backup.enabled,
+        )
+    except Exception as e:
+        logger.warning(f"manifest.db backup failed (non-critical): {e}")
+
+    # Verify cloud integrity after successful cloud backup
+    if cloud_status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
+        try:
+            verify_result = verify_cloud_integrity_task(config, gcs_key_path)
+            if verify_result.get("status") == "MISMATCH":
+                logger.warning(
+                    f"Cloud integrity check found mismatches: "
+                    f"{verify_result.get('mismatches', 0)} mismatches, "
+                    f"{verify_result.get('missing', 0)} missing"
+                )
+            else:
+                logger.info(f"Cloud integrity check passed: {verify_result.get('matches', 0)} files verified")
+        except Exception as e:
+            logger.warning(f"Cloud integrity verification failed (non-critical): {e}")
 
     return overall
 

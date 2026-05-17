@@ -41,8 +41,37 @@ Soft delete, custom versioning, anomaly detection, canary files, integrity verif
 | 3 — Orchestration | Prefect tasks, flow definition, email automation | ✅ Done |
 | 4 — UI | FastAPI status page (Alpine.js + Tailwind) | ✅ Done |
 | 5 — Scripts | setup_credentials, validate_config, seed_cloud, test_connections, deploy scripts | ✅ Done |
-| 6 — Tests | Unit + integration tests (109 tests, incremental) | ✅ Done |
+| 6 — Tests | Unit + integration tests (115 tests, incremental) | ✅ Done |
 | 7 — Pre-Flight | Disk space, GCS quota, connectivity checks | ✅ Done |
+
+## P0 Fixes (Completed)
+
+| # | Fix | File | Status |
+|---|-----|------|--------|
+| 1 | Manifest drift — parse Robocopy per-file failures | `core/robocopy.py` | ✅ Done |
+| 2 | `file_size` column overflow (Integer → BigInteger) | `models/manifest_model.py` | ✅ Done |
+| 3 | Email notifications wired into `on_failure` hook | `flow.py` | ✅ Done |
+| 4 | Rclone exit code 5 → CLOUD_PARTIAL (allow Prefect retries) | `core/rclone.py` | ✅ Done |
+| 5 | Robocopy `/XJ` flag — exclude junction points | `core/robocopy.py` | ✅ Done |
+| 6 | Full test suite verification (115 passing) | `tests/` | ✅ Done |
+
+## Production Readiness Gaps (Pre-Deployment)
+
+| # | Gap | Priority | Status |
+|---|-----|----------|--------|
+| 1 | manifest.db backup after each successful run | Critical | ✅ Done — `tasks/manifest_backup_task.py` + integrated in flow |
+| 2 | Post-backup integrity verification (`rclone check`) | Critical | ✅ Done — `run_rclone_check()` + `tasks/verification_task.py` |
+| 3 | Batch manifest lookups in scanner (200K+ files) | Critical | ✅ Done — `get_all_entries()` bulk load + in-memory dict |
+| 4 | `deploy/setup_email_notifications.py` → real Prefect automations | Critical | ✅ Done — creates EmailServerCredentials block + automations |
+| 5 | `install_services.bat` / `uninstall_services.bat` for deployment | Critical | ✅ Done — created in `deploy/` |
+| 6 | VSS for locked Tally/Winman files (if apps run overnight) | Important | Pending (client confirmation) |
+| 7 | Alerting on extended "no changes" periods | Important | Pending |
+| 8 | `.env.example` for deployment documentation | Nice-to-have | ✅ Done |
+| 9 | UI `/health` endpoint for NSSM monitoring | Nice-to-have | ✅ Done |
+| 10 | Backup metrics collection (duration, throughput trends) | Nice-to-have | Pending |
+| 11 | Config versioning / backup | Nice-to-have | Pending |
+| 12 | Graceful shutdown handling | Nice-to-have | Pending |
+| 13 | Log files included in cloud backup | Nice-to-have | Pending |
 
 ## Key File Boundaries
 

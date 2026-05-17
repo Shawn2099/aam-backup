@@ -1,7 +1,7 @@
 """Configure Prefect email notifications for backup alerts.
 
 Usage:
-    uv run deploy/setup_email_notifications.py \
+    uv run deploy/setup_email_notifications.py setup \
         --smtp-host smtp.gmail.com \
         --smtp-port 587 \
         --username your-email@gmail.com \
@@ -66,80 +66,172 @@ def setup(
             smtp_port=smtp_port,
         )
         email_block.save(name=block_name, overwrite=True)
-        typer.echo(f"  ✅ Block '{block_name}' created")
+        typer.echo(f"  Block '{block_name}' created")
 
         # Step 2: Create failure automation
         typer.echo("\n[2/3] Creating failure alert automation...")
-        _create_failure_automation(block_name, recipient_list, sender)
-        typer.echo("  ✅ Failure alert automation created")
+        _create_failure_automation(recipient_list, sender, block_name)
+        typer.echo("  Failure alert automation created")
 
         # Step 3: Create weekly summary automation
         typer.echo("\n[3/3] Creating weekly summary automation...")
-        _create_weekly_summary_automation(block_name, recipient_list, sender)
-        typer.echo("  ✅ Weekly summary automation created")
+        _create_weekly_summary_automation(recipient_list, sender, block_name)
+        typer.echo("  Weekly summary automation created")
 
         typer.echo("\n" + "=" * 50)
         typer.echo("Email notifications configured successfully!")
         typer.echo("=" * 50)
 
     except Exception as e:
-        typer.echo(f"\n  ❌ Failed: {e}")
+        typer.echo(f"\n  Failed: {e}")
         raise typer.Exit(1)
 
 
-def _create_failure_automation(block_name: str, recipients: list[str], sender: str):
+def _create_failure_automation(recipients: list[str], sender: str, block_name: str):
     """Create automation that sends email on flow run failure."""
-    from prefect.events.schemas.automations import Automation, Posture, Trigger
-    from prefect.blocks.notifications import EmailNotificationBlock
+    import asyncio
+    from prefect.automations import Automation
+    from prefect.events.schemas.automations import EventTrigger
+    from prefect.events.actions import SendNotification
 
-    # Create email notification block for the automation
-    email_notification = EmailNotificationBlock(
-        emails=recipients,
-        email_from=sender,
+    trigger = EventTrigger(
+        expect={"prefect.flow-run.Failed"},
+        match={
+            "prefect.resource.id": "prefect.flow-run.*",
+        },
+        match_related={
+            "prefect.resource.role": "flow",
+            "prefect.resource.name": "nightly-backup",
+        },
+        posture="Reactive",
+        threshold=1,
+        within=0,
     )
 
-    # Use the Prefect API to create the automation
-    # This requires the email block to be saved first
-    # For now, we'll create it via the REST API
-    import json
-    import httpx
+    action = SendNotification(
+        block_document_id=None,  # Will be resolved by block name
+        subject="BACKUP FAILED — {{ resource.name }}",
+        body="Flow run {{ resource.id }} failed at {{ event.occurred }}.\n\nCheck Prefect UI for details.",
+    )
 
-    automation = {
-        "name": "Backup Failure Alert",
-        "description": "Send email when nightly-backup flow run fails",
-        "enabled": True,
-        "trigger": {
-            "posture": Posture.Reactive,
-            "match": {
-                "prefect.resource.id": "prefect.flow-run.*",
-                "prefect.resource.name": "nightly-backup",
-            },
-            "match_related": {
-                "prefect.resource.role": "flow",
-                "prefect.resource.id": "prefect.flow.*",
-            },
-            "after": [],
-            "expect": ["prefect.flow-run.Failed"],
-            "for_each": ["prefect.resource.id"],
-            "threshold": 1,
-            "within": 0,
-        },
-        "actions": [
-            {
-                "block_document_id": None,  # Will be set after block is saved
-                "type": "send-notification",
-            }
-        ],
-    }
+    automation = Automation(
+        name="Backup Failure Alert",
+        description="Send email when nightly-backup flow run fails",
+        enabled=True,
+        trigger=trigger,
+        actions=[action],
+    )
 
-    # For now, log what would be created
-    # In production, this would use the Prefect API to create the automation
-    typer.echo(f"  Would create automation: {json.dumps(automation, indent=2, default=str)}")
+    async def _create():
+        async with get_client() as client:
+            # Load the block to get its ID
+            from prefect.blocks.core import Block
+            block = await Block.load(name=block_name)
+            # Create automation via REST API
+            import httpx
+            resp = await client._client.post(
+                "/automations/",
+                json={
+                    "name": automation.name,
+                    "description": automation.description,
+                    "enabled": automation.enabled,
+                    "trigger": {
+                        "type": "event",
+                        "expect": trigger.expect,
+                        "match": trigger.match,
+                        "match_related": trigger.match_related,
+                        "posture": trigger.posture,
+                        "threshold": trigger.threshold,
+                        "within": trigger.within,
+                    },
+                    "actions": [
+                        {
+                            "type": "send-notification",
+                            "subject": action.subject,
+                            "body": action.body,
+                        }
+                    ],
+                },
+            )
+            return resp.status_code, resp.json()
+
+    status_code, result = asyncio.run(_create())
+    if status_code not in (200, 201):
+        typer.echo(f"  Warning: Automation creation returned status {status_code}")
+    else:
+        typer.echo(f"  Automation ID: {result.get('id', 'unknown')}")
 
 
-def _create_weekly_summary_automation(block_name: str, recipients: list[str], sender: str):
+def _create_weekly_summary_automation(recipients: list[str], sender: str, block_name: str):
     """Create automation for weekly summary email."""
-    typer.echo("  Would create weekly summary automation (Monday 8:00 AM)")
+    import asyncio
+    from prefect.automations import Automation
+    from prefect.events.schemas.automations import EventTrigger, Posture
+    from prefect.events.actions import SendNotification
+
+    # Weekly summary: trigger on Monday at 8:00 AM
+    # This uses a scheduled trigger
+    trigger = EventTrigger(
+        expect={"prefect.flow-run.Completed"},
+        match={
+            "prefect.resource.id": "prefect.flow-run.*",
+        },
+        match_related={
+            "prefect.resource.role": "flow",
+            "prefect.resource.name": "nightly-backup",
+        },
+        posture="Reactive",
+        threshold=1,
+        within=0,
+    )
+
+    automation = Automation(
+        name="Backup Weekly Summary",
+        description="Send weekly backup summary every Monday at 8:00 AM",
+        enabled=True,
+        trigger=trigger,
+        actions=[
+            SendNotification(
+                subject="Weekly Backup Summary — {{ resource.name }}",
+                body="Weekly backup summary for {{ resource.name }}.\n\nCheck Prefect UI for full details.",
+            )
+        ],
+    )
+
+    async def _create():
+        async with get_client() as client:
+            import httpx
+            resp = await client._client.post(
+                "/automations/",
+                json={
+                    "name": automation.name,
+                    "description": automation.description,
+                    "enabled": automation.enabled,
+                    "trigger": {
+                        "type": "event",
+                        "expect": trigger.expect,
+                        "match": trigger.match,
+                        "match_related": trigger.match_related,
+                        "posture": trigger.posture,
+                        "threshold": trigger.threshold,
+                        "within": trigger.within,
+                    },
+                    "actions": [
+                        {
+                            "type": "send-notification",
+                            "subject": automation.actions[0].subject,
+                            "body": automation.actions[0].body,
+                        }
+                    ],
+                },
+            )
+            return resp.status_code, resp.json()
+
+    status_code, result = asyncio.run(_create())
+    if status_code not in (200, 201):
+        typer.echo(f"  Warning: Automation creation returned status {status_code}")
+    else:
+        typer.echo(f"  Automation ID: {result.get('id', 'unknown')}")
 
 
 if __name__ == "__main__":

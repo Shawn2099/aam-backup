@@ -88,10 +88,11 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
     """Walk the source drive and classify files.
 
     Algorithm:
-    1. os.walk with topdown=True for in-place dirnames pruning.
-    2. For each file: extension check → pattern check → stat → manifest lookup.
-    3. Classify as new, modified, or unchanged.
-    4. After walk: detect deleted files (in manifest but not on disk).
+    1. Load all manifest entries into memory once (bulk read).
+    2. os.walk with topdown=True for in-place dirnames pruning.
+    3. For each file: extension check → pattern check → stat → in-memory manifest lookup.
+    4. Classify as new, modified, or unchanged.
+    5. After walk: detect deleted files (in manifest but not on disk).
 
     Args:
         config: Validated application configuration.
@@ -107,6 +108,9 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
 
     result = ScanResult()
     current_paths: set[str] = set()
+
+    # Bulk load all manifest entries into memory — avoids 200K+ individual queries
+    manifest_cache = db.get_all_entries()
 
     for dirpath, dirnames, filenames in os.walk(source, topdown=True):
         current_dir = Path(dirpath)
@@ -141,8 +145,8 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
             # Step 5: Add to current paths
             current_paths.add(relative_path)
 
-            # Step 6: Manifest lookup
-            existing = db.get_entry(relative_path)
+            # Step 6: In-memory manifest lookup (O(1) dict access)
+            existing = manifest_cache.get(relative_path)
 
             if existing is None:
                 # Step 7a: NEW FILE
@@ -159,6 +163,8 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                     last_modified_timestamp=stat_result.st_mtime,
                     checksum="pending",
                 )
+                # Update cache so subsequent scans in same run see it
+                manifest_cache[relative_path] = db.get_entry(relative_path)
 
             else:
                 # Step 7b/7c: Check size and mtime (1.0 second tolerance)
@@ -197,8 +203,8 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                             checksum=checksum,
                         )
 
-    # Deleted file detection
-    all_manifest_paths = db.get_all_paths()
+    # Deleted file detection — use cached manifest paths
+    all_manifest_paths = set(manifest_cache.keys())
     deleted = all_manifest_paths - current_paths
     for deleted_path in deleted:
         result.deleted_files.append(deleted_path)

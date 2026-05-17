@@ -60,27 +60,58 @@ def _parse_robocopy_output(output: str) -> dict[str, int]:
     """
     result = {"files_copied": 0, "bytes_copied": 0, "files_failed": 0}
 
-    # Robocopy summary lines (English locale):
-    #   Files :  ...  N  ...  N
-    #   Bytes :  ...  N  ...  N
-    #   Failed : ...  N  ...  N
     lines = output.splitlines()
     for line in lines:
         line = line.strip()
-        # Match "Files : <total> <copied> <skipped> <mismatched> <failed> <extra>"
         files_match = re.match(r"Files\s*:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line)
         if files_match:
             result["files_copied"] = int(files_match.group(2))
             result["files_failed"] = int(files_match.group(5))
             continue
 
-        # Match "Bytes : <total> <copied> <skipped> <mismatched> <failed> <extra>"
         bytes_match = re.match(r"Bytes\s*:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)", line)
         if bytes_match:
             result["bytes_copied"] = int(bytes_match.group(2))
             continue
 
     return result
+
+
+def _parse_failed_files(output: str, source_drive: str) -> set[str]:
+    """Parse Robocopy output for failed file paths.
+
+    Robocopy logs failures as:
+        ERROR 5 (0x00000005) Copying File D:\path\to\file.txt
+
+    Args:
+        output: Full Robocopy output text.
+        source_drive: Source drive path (e.g., "D:\\").
+
+    Returns:
+        Set of relative paths that failed to copy.
+    """
+    failed = set()
+    source_prefix = Path(source_drive).resolve().as_posix()
+
+    # Match "ERROR <code> (...) Copying File <full_path>"
+    pattern = re.compile(r"ERROR\s+\d+\s+\([^)]+\)\s+Copying\s+File\s+(.+)$", re.IGNORECASE)
+
+    for line in output.splitlines():
+        match = pattern.search(line)
+        if match:
+            full_path = match.group(1).strip()
+            # Convert to relative path
+            try:
+                full_path_normalized = Path(full_path).resolve().as_posix()
+                if full_path_normalized.startswith(source_prefix):
+                    relative = full_path_normalized[len(source_prefix):].lstrip("/")
+                    # Normalize separators for Windows
+                    relative = relative.replace("/", "\\")
+                    failed.add(relative)
+            except Exception:
+                pass
+
+    return failed
 
 
 def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> RobocopyResult:
@@ -109,6 +140,8 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
         paths_config.lan_destination,
         "/MIR",
         "/Z",
+        "/XJ",
+        "/FFT",
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
         "/NP",
@@ -155,25 +188,37 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
         )
 
         # Update manifest for backed up files
+        # On partial failure, only mark files that actually succeeded
         if status in ("LAN_COMPLETE", "LAN_PARTIAL"):
-            changed_paths = [f.relative_path for f in scan_result.new_files + scan_result.modified_files]
-            if changed_paths:
-                db.batch_mark_lan_backed_up(changed_paths)
-                # Compute checksums for new files that were pending
-                for file_info in scan_result.new_files:
-                    entry = db.get_entry(file_info.relative_path)
-                    if entry and entry.checksum == "pending":
-                        try:
-                            full_path = Path(paths_config.source_drive) / file_info.relative_path
-                            checksum = _compute_file_checksum(full_path)
-                            db.upsert_entry(
-                                relative_path=file_info.relative_path,
-                                file_size=file_info.file_size,
-                                last_modified_timestamp=file_info.last_modified_timestamp,
-                                checksum=checksum,
-                            )
-                        except Exception as e:
-                            logger.warning(f"Could not compute checksum for {file_info.relative_path}: {e}")
+            all_changed = [f.relative_path for f in scan_result.new_files + scan_result.modified_files]
+            failed_paths = _parse_failed_files(result.stdout, paths_config.source_drive)
+
+            # Only mark files that were NOT in the failed list
+            successful_paths = [p for p in all_changed if p not in failed_paths]
+
+            if failed_paths:
+                logger.warning(f"Robocopy failed on {len(failed_paths)} files: {list(failed_paths)[:10]}")
+
+            if successful_paths:
+                db.batch_mark_lan_backed_up(successful_paths)
+
+            # Compute checksums for new files that were successfully backed up
+            for file_info in scan_result.new_files:
+                if file_info.relative_path in failed_paths:
+                    continue
+                entry = db.get_entry(file_info.relative_path)
+                if entry and entry.checksum == "pending":
+                    try:
+                        full_path = Path(paths_config.source_drive) / file_info.relative_path
+                        checksum = _compute_file_checksum(full_path)
+                        db.upsert_entry(
+                            relative_path=file_info.relative_path,
+                            file_size=file_info.file_size,
+                            last_modified_timestamp=file_info.last_modified_timestamp,
+                            checksum=checksum,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not compute checksum for {file_info.relative_path}: {e}")
 
         return robocopy_result
 
