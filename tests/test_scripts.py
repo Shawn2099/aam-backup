@@ -223,24 +223,25 @@ def test_create_deployment_time_to_cron():
     assert time_to_cron("12:30") == "30 12 * * *"
 
 
-def test_create_deployment_dry_run(tmp_path):
-    """create_deployment.py builds correct command."""
+def test_create_deployment_uses_flow_deploy(tmp_path):
+    """create_deployment.py uses native flow.deploy() instead of subprocess."""
     config = {
         "schedule": {"enabled": True, "daily_time": "23:00"},
     }
 
     from deploy.create_deployment import create_deployment
 
-    with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="OK", stderr="")
+    # Mock the flow's deploy method — patch at the source module
+    with patch("flow.nightly_backup") as mock_flow:
+        mock_flow.deploy.return_value = "test-deployment-id"
         result = create_deployment(config, work_pool="default")
         assert result is True
 
-        args = mock_run.call_args[0][0]
-        assert "prefect" in args
-        assert "deploy" in args
-        assert "--cron" in args
-        assert "00 23 * * *" in args
+        mock_flow.deploy.assert_called_once()
+        call_kwargs = mock_flow.deploy.call_args[1]
+        assert call_kwargs["name"] == "nightly-backup-production"
+        assert call_kwargs["work_pool_name"] == "default"
+        assert call_kwargs["cron"] == "00 23 * * *"
 
 
 # --- install_service.py tests ---

@@ -3,8 +3,9 @@
 import os
 from pathlib import Path
 
-from loguru import logger
 from prefect import flow
+from prefect.logging import get_run_logger
+from prefect.tasks import exponential_backoff
 from prefect.task_runners import ThreadPoolTaskRunner
 
 from core.logging_setup import configure_logging
@@ -15,11 +16,33 @@ from tasks.preflight_task import preflight_task
 from tasks.scan_task import scan_task
 
 
+def _on_backup_failure(flow_obj, flow_run, state):
+    """Hook called when the backup flow fails."""
+    logger = get_run_logger()
+    logger.critical(
+        f"Backup flow FAILED: {state.message}. "
+        f"Run ID: {flow_run.id}. "
+        f"Check Prefect UI for details."
+    )
+
+
+def _on_backup_completion(flow_obj, flow_run, state):
+    """Hook called when the backup flow completes successfully."""
+    logger = get_run_logger()
+    logger.info(f"Backup flow completed successfully. Run ID: {flow_run.id}")
+
+
 @flow(
     name="nightly-backup",
+    flow_run_name="backup-{config_path}",
     task_runner=ThreadPoolTaskRunner(max_workers=2),
     log_prints=True,
-    version="1.0.0",
+    version="1.1.0",
+    timeout_seconds=28800,  # 8 hours max
+    retries=1,
+    retry_delay_seconds=300,  # 5 minutes
+    on_failure=[_on_backup_failure],
+    on_completion=[_on_backup_completion],
 )
 def nightly_backup(config_path: str = "config.yaml") -> str:
     """Execute the nightly backup flow.
@@ -37,6 +60,8 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
     Returns:
         Overall status: COMPLETE, PARTIAL_FAILURE, or FAILED.
     """
+    logger = get_run_logger()
+
     # Configure logging
     log_dir = Path(os.environ.get("BACKUP_LOG_DIR", "logs"))
     configure_logging(log_dir)
@@ -103,4 +128,11 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
 
 if __name__ == "__main__":
-    nightly_backup()
+    nightly_backup.deploy(
+        name="nightly-backup-production",
+        work_pool_name="default",
+        cron="0 23 * * *",
+        parameters={"config_path": "config.yaml"},
+        tags=["production", "backup", "aam-associates"],
+        description="Nightly backup of D:\\ drive to LAN and GCS",
+    )

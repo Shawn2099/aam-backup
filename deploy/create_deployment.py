@@ -1,16 +1,16 @@
 """Create Prefect deployment for the nightly backup flow.
 
 Usage:
-    uv run deploy/create_deployment.py [--config config.yaml]
+    uv run deploy/create_deployment.py [--config config.yaml] [--work-pool default]
 
+Uses Prefect's native flow.deploy() method instead of subprocess CLI calls.
 Creates a deployment named 'nightly-backup-production' with:
 - Cron schedule at configured daily_time
 - Work pool assignment
-- Environment variables for config path
+- Default parameters
 """
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
@@ -32,50 +32,32 @@ def time_to_cron(time_str: str) -> str:
 
 
 def create_deployment(config: dict, work_pool: str = "default") -> bool:
-    """Create the Prefect deployment."""
+    """Create the Prefect deployment using native flow.deploy()."""
+    from flow import nightly_backup
+
     schedule = config.get("schedule", {})
     daily_time = schedule.get("daily_time", "23:00")
     cron = time_to_cron(daily_time)
 
-    # Build the deployment command
-    cmd = [
-        "prefect",
-        "deploy",
-        "flow.py:nightly_backup",
-        "--name",
-        "nightly-backup-production",
-        "--cron",
-        cron,
-        "--work-pool",
-        work_pool,
-        "--param",
-        f"config_path={Path('config.yaml').resolve()}",
-    ]
+    config_path = Path("config.yaml").resolve()
 
     print(f"  Schedule: {cron} (daily at {daily_time})")
     print(f"  Work pool: {work_pool}")
-    print(f"  Config: {Path('config.yaml').resolve()}")
-    print(f"\n  Running: {' '.join(cmd)}\n")
+    print(f"  Config: {config_path}")
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
+        deployment_id = nightly_backup.deploy(
+            name="nightly-backup-production",
+            work_pool_name=work_pool,
+            cron=cron,
+            parameters={"config_path": str(config_path)},
+            tags=["production", "backup", "aam-associates"],
+            description="Nightly backup of D:\\ drive to LAN and GCS",
         )
-        if result.returncode == 0:
-            print("  Deployment created successfully")
-            print(result.stdout)
-            return True
-        else:
-            print(f"  Failed: {result.stderr.strip()}")
-            return False
-    except FileNotFoundError:
-        print("ERROR: prefect CLI not found in PATH")
-        return False
-    except subprocess.TimeoutExpired:
-        print("ERROR: Deployment creation timed out")
+        print(f"  Deployment created: {deployment_id}")
+        return True
+    except Exception as e:
+        print(f"  Failed: {e}")
         return False
 
 

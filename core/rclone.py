@@ -1,8 +1,6 @@
-"""Rclone wrapper — executes sync to GCS with temp config, retry, and cleanup."""
+"""Rclone wrapper — executes sync to GCS with temp config and cleanup."""
 
-import os
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,7 +27,7 @@ def _classify_exit_code(code: int) -> str:
     Code 2: CLOUD_PARTIAL
     Code 3: CLOUD_FAILED (source/destination not found)
     Code 4: CLOUD_PARTIAL
-    Code 5: RETRYABLE (temporary network error)
+    Code 5: CLOUD_FAILED (temporary network error — Prefect retries at task level)
     Code 6: CLOUD_PARTIAL
     Code 7: CLOUD_FAILED
     Code 8: CLOUD_PARTIAL
@@ -39,7 +37,7 @@ def _classify_exit_code(code: int) -> str:
         code: Rclone exit code.
 
     Returns:
-        CLOUD_COMPLETE, CLOUD_PARTIAL, CLOUD_FAILED, or RETRYABLE.
+        CLOUD_COMPLETE, CLOUD_PARTIAL, or CLOUD_FAILED.
     """
     mapping = {
         0: "CLOUD_COMPLETE",
@@ -47,7 +45,7 @@ def _classify_exit_code(code: int) -> str:
         2: "CLOUD_PARTIAL",
         3: "CLOUD_FAILED",
         4: "CLOUD_PARTIAL",
-        5: "RETRYABLE",
+        5: "CLOUD_FAILED",
         6: "CLOUD_PARTIAL",
         7: "CLOUD_FAILED",
         8: "CLOUD_PARTIAL",
@@ -155,8 +153,10 @@ def run_rclone(
 ) -> RcloneResult:
     """Execute rclone sync to mirror source to GCS.
 
-    Creates temp config and filter files, executes sync with retry logic,
+    Creates temp config and filter files, executes sync,
     cleans up temp files in finally block.
+
+    Retry logic is handled at the Prefect task level via exponential_backoff.
 
     Args:
         config: Validated application configuration.
@@ -214,58 +214,44 @@ def run_rclone(
 
         logger.info(f"Running Rclone sync to {remote}")
 
-        # Retry loop for RETRYABLE exit code (5)
-        max_retries = cloud_config.retry_count
-        backoff = 60  # seconds
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=cloud_config.subprocess_timeout_seconds,
+        )
 
-        for attempt in range(max_retries + 1):
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=cloud_config.subprocess_timeout_seconds,
-                )
+        status = _classify_exit_code(result.returncode)
 
-                status = _classify_exit_code(result.returncode)
+        rclone_result = RcloneResult(
+            status=status,
+            exit_code=result.returncode,
+            output=result.stdout,
+        )
 
-                if status == "RETRYABLE" and attempt < max_retries:
-                    logger.warning(
-                        f"Rclone retryable error (attempt {attempt + 1}/{max_retries}), "
-                        f"waiting {backoff}s..."
-                    )
-                    time.sleep(backoff)
-                    backoff *= 2
-                    continue
+        logger.info(f"Rclone {status} (exit code {result.returncode})")
 
-                rclone_result = RcloneResult(
-                    status=status,
-                    exit_code=result.returncode,
-                    output=result.stdout,
-                )
+        # Update manifest
+        if status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
+            changed_paths = [
+                f.relative_path
+                for f in scan_result.new_files + scan_result.modified_files
+            ]
+            if changed_paths:
+                db.batch_mark_cloud_backed_up(changed_paths)
 
-                logger.info(f"Rclone {status} (exit code {result.returncode})")
+        return rclone_result
 
-                # Update manifest
-                if status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
-                    changed_paths = [
-                        f.relative_path
-                        for f in scan_result.new_files + scan_result.modified_files
-                    ]
-                    if changed_paths:
-                        db.batch_mark_cloud_backed_up(changed_paths)
-
-                return rclone_result
-
-            except subprocess.TimeoutExpired:
-                logger.critical(
-                    f"Rclone timed out after {cloud_config.subprocess_timeout_seconds}s"
-                )
-                return RcloneResult(status="CLOUD_FAILED", exit_code=-1)
+    except subprocess.TimeoutExpired:
+        logger.critical(
+            f"Rclone timed out after {cloud_config.subprocess_timeout_seconds}s"
+        )
+        return RcloneResult(status="CLOUD_FAILED", exit_code=-1)
 
     except FileNotFoundError:
         logger.critical("rclone.exe not found — not installed?")
         return RcloneResult(status="CLOUD_FAILED", exit_code=-1)
+
     except OSError as e:
         logger.critical(f"Rclone failed with OS error: {e}")
         return RcloneResult(status="CLOUD_FAILED", exit_code=-1)

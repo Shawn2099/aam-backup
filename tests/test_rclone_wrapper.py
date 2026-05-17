@@ -21,9 +21,9 @@ def test_classify_exit_code_0():
     assert _classify_exit_code(0) == "CLOUD_COMPLETE"
 
 
-def test_classify_exit_code_5_retryable():
-    """Exit code 5 → RETRYABLE."""
-    assert _classify_exit_code(5) == "RETRYABLE"
+def test_classify_exit_code_5_failed():
+    """Exit code 5 → CLOUD_FAILED (Prefect handles retries at task level)."""
+    assert _classify_exit_code(5) == "CLOUD_FAILED"
 
 
 def test_classify_exit_code_7_failed():

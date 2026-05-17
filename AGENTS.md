@@ -41,8 +41,8 @@ Soft delete, custom versioning, anomaly detection, canary files, integrity verif
 | 3 — Orchestration | Prefect tasks, flow definition, email automation | ✅ Done |
 | 4 — UI | FastAPI status page (Alpine.js + Tailwind) | ✅ Done |
 | 5 — Scripts | setup_credentials, validate_config, seed_cloud, test_connections, deploy scripts | ✅ Done |
-| 6 — Tests | Unit + integration tests (88 tests, incremental) | ✅ Done |
-| 7 — Pre-Flight | Disk space, GCS quota, connectivity checks | Next |
+| 6 — Tests | Unit + integration tests (109 tests, incremental) | ✅ Done |
+| 7 — Pre-Flight | Disk space, GCS quota, connectivity checks | ✅ Done |
 
 ## Key File Boundaries
 

@@ -1,6 +1,7 @@
 """Prefect task: scan source drive for changes."""
 
 from prefect import task
+from prefect.logging import get_run_logger
 
 from core.manifest_db import ManifestDB
 from core.scanner import scan_drive
@@ -8,7 +9,14 @@ from models.config_model import AppConfig
 from models.scan_result import ScanResult
 
 
-@task(name="scan_task", tags=["scan"], retries=0)
+@task(
+    name="scan_task",
+    tags=["scan"],
+    retries=1,
+    retry_delay_seconds=30,
+    task_run_name="scan-drive",
+    timeout_seconds=3600,  # 1 hour max for scanning
+)
 def scan_task(config: AppConfig, database_path: str) -> ScanResult:
     """Scan source drive and detect new/modified/deleted files.
 
@@ -19,9 +27,17 @@ def scan_task(config: AppConfig, database_path: str) -> ScanResult:
     Returns:
         ScanResult with file classifications.
     """
+    logger = get_run_logger()
+    logger.info(f"Scanning drive: {config.paths.source_drive}")
+
     db = ManifestDB(database_path)
     try:
         result = scan_drive(config, db)
+        logger.info(
+            f"Scan complete: {len(result.new_files)} new, "
+            f"{len(result.modified_files)} modified, "
+            f"{len(result.deleted_files)} deleted"
+        )
         return result
     finally:
         db.close()

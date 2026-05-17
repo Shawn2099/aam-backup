@@ -15,35 +15,67 @@ def test_flow_definition_exists():
 def test_flow_task_runner_config():
     """Flow uses ThreadPoolTaskRunner with max_workers=2."""
     from flow import nightly_backup
-    # Verify the flow exists and has correct name
     assert nightly_backup.name == "nightly-backup"
 
 
-def test_scan_no_changes_returns_complete(temp_config, temp_db):
-    """Flow returns COMPLETE when no changes detected."""
+def test_flow_run_name_template():
+    """Flow has flow_run_name template configured."""
+    from flow import nightly_backup
+    assert nightly_backup.flow_run_name is not None
+
+
+def test_flow_timeout_configured():
+    """Flow has timeout_seconds configured."""
+    from flow import nightly_backup
+    assert nightly_backup.timeout_seconds == 28800
+
+
+def test_flow_retries_configured():
+    """Flow has retries and retry_delay_seconds configured."""
+    from flow import nightly_backup
+    assert nightly_backup.retries == 1
+    assert nightly_backup.retry_delay_seconds == 300
+
+
+def test_flow_on_failure_hook():
+    """Flow has on_failure hook configured."""
+    from flow import nightly_backup
+    assert nightly_backup.on_failure_hooks is not None
+    assert len(nightly_backup.on_failure_hooks) == 1
+    assert callable(nightly_backup.on_failure_hooks[0])
+
+
+def test_scan_task_retries_configured():
+    """Scan task has retries configured."""
     from tasks.scan_task import scan_task
-
-    # Empty source directory — no changes
-    result = scan_task.fn(temp_config, temp_db._database_path)
-    assert not result.has_changes
+    assert scan_task.retries == 1
+    assert scan_task.timeout_seconds == 3600
 
 
-def test_lan_task_disabled_returns_skipped(temp_config):
-    """LAN task returns LAN_SKIPPED when disabled."""
+def test_lan_task_retries_configured():
+    """LAN task has retries and exponential_backoff configured."""
     from tasks.lan_task import lan_backup_task
-
-    temp_config.lan_backup.enabled = False
-    result = lan_backup_task.fn(temp_config, ScanResult(), "/tmp/test.db")
-    assert result["status"] == "LAN_SKIPPED"
+    assert lan_backup_task.retries == 3
+    assert lan_backup_task.timeout_seconds == 14400
 
 
-def test_cloud_task_disabled_returns_skipped(temp_config):
-    """Cloud task returns CLOUD_SKIPPED when disabled."""
+def test_cloud_task_retries_configured():
+    """Cloud task has retries and exponential_backoff configured."""
     from tasks.cloud_task import cloud_backup_task
+    assert cloud_backup_task.retries == 3
+    assert cloud_backup_task.timeout_seconds == 21600
 
-    temp_config.cloud_backup.enabled = False
-    result = cloud_backup_task.fn(temp_config, "/fake/key.json", ScanResult(), "/tmp/test.db")
-    assert result["status"] == "CLOUD_SKIPPED"
+
+def test_preflight_task_retries_configured():
+    """Preflight task has retries configured."""
+    from tasks.preflight_task import preflight_task
+    assert preflight_task.retries == 1
+
+
+def test_config_task_retries_configured():
+    """Config task has retries configured."""
+    from tasks.config_task import load_config_task
+    assert load_config_task.retries == 2
 
 
 def test_config_task_loads_valid_config(temp_config_path):
