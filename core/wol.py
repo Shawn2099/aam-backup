@@ -1,13 +1,12 @@
 """Wake-on-LAN module — ping check and magic packet sending."""
 
 import platform
-import socket
-import struct
 import subprocess
 import time
-from pathlib import Path
 
+import typer
 from loguru import logger
+from wakeonlan import send_magic_packet as wol_send
 
 from models.config_model import AppConfig
 
@@ -50,28 +49,18 @@ def ping_host(ip: str, timeout: int = 5) -> bool:
 
 
 def send_magic_packet(mac_address: str, server_ip: str = "255.255.255.255", port: int = 9) -> None:
-    """Send a Wake-on-LAN magic packet.
+    """Send a Wake-on-LAN magic packet using the wakeonlan library.
 
     Args:
         mac_address: MAC address in XX:XX:XX:XX:XX:XX format.
         server_ip: Broadcast IP address (default: 255.255.255.255).
-        port: UDP port (default: 9, the discard port commonly used for WoL).
+        port: UDP port (default: 9).
     """
-    # Parse MAC address
-    mac_bytes = bytes.fromhex(mac_address.replace(":", "").replace("-", ""))
-    if len(mac_bytes) != 6:
-        raise WolError(f"Invalid MAC address: {mac_address}")
-
-    # Magic packet: 6 bytes of 0xFF + 16 repetitions of MAC address
-    payload = b"\xff" * 6 + mac_bytes * 16
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     try:
-        sock.sendto(payload, (server_ip, port))
+        wol_send(mac_address, ip_address=server_ip, port=port)
         logger.info(f"WoL magic packet sent to {mac_address}")
-    finally:
-        sock.close()
+    except Exception as e:
+        raise WolError(f"Failed to send WoL packet: {e}")
 
 
 def ensure_server_online(config: AppConfig) -> bool:
@@ -122,3 +111,36 @@ def ensure_server_online(config: AppConfig) -> bool:
         f"Backup server {wol_config.server_ip} did not respond within "
         f"{wol_config.wake_timeout_seconds}s after WoL"
     )
+
+
+# --- CLI for testing WoL ---
+app = typer.Typer(help="Wake-on-LAN utilities")
+
+
+@app.command()
+def ping(
+    ip: str = typer.Argument(..., help="IP address to ping"),
+    timeout: int = typer.Option(5, "--timeout", "-t", help="Timeout in seconds"),
+):
+    """Ping a host and report if it's reachable."""
+    if ping_host(ip, timeout):
+        typer.echo(f"✅ {ip} is reachable")
+    else:
+        typer.echo(f"❌ {ip} is not reachable")
+        raise typer.Exit(1)
+
+
+@app.command()
+def wol(
+    mac: str = typer.Argument(..., help="MAC address (XX:XX:XX:XX:XX:XX)"),
+    ip: str = typer.Option("255.255.255.255", "--ip", "-i", help="Broadcast IP"),
+    port: int = typer.Option(9, "--port", "-p", help="UDP port"),
+):
+    """Send a Wake-on-LAN magic packet."""
+    typer.echo(f"Sending WoL packet to {mac} via {ip}:{port}")
+    send_magic_packet(mac, ip, port)
+    typer.echo("✅ Packet sent")
+
+
+if __name__ == "__main__":
+    app()

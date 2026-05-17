@@ -10,11 +10,13 @@ Creates a deployment named 'nightly-backup-production' with:
 - Default parameters
 """
 
-import argparse
 import sys
 from pathlib import Path
 
+import typer
 import yaml
+
+app = typer.Typer(help="Create Prefect deployment")
 
 
 def load_config(config_path: Path) -> dict:
@@ -26,24 +28,30 @@ def load_config(config_path: Path) -> dict:
 def time_to_cron(time_str: str) -> str:
     """Convert HH:MM to cron expression."""
     parts = time_str.split(":")
-    hour = parts[0]
-    minute = parts[1]
-    return f"{minute} {hour} * * *"
+    return f"{parts[1]} {parts[0]} * * *"
 
 
-def create_deployment(config: dict, work_pool: str = "default") -> bool:
+@app.command()
+def create(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml"),
+    work_pool: str = typer.Option("default", "--work-pool", "-p", help="Prefect work pool name"),
+):
     """Create the Prefect deployment using native flow.deploy()."""
     from flow import nightly_backup
 
-    schedule = config.get("schedule", {})
+    typer.echo("=" * 50)
+    typer.echo("Backup Agent — Create Deployment")
+    typer.echo("=" * 50)
+
+    loaded = load_config(config)
+    schedule = loaded.get("schedule", {})
     daily_time = schedule.get("daily_time", "23:00")
     cron = time_to_cron(daily_time)
-
     config_path = Path("config.yaml").resolve()
 
-    print(f"  Schedule: {cron} (daily at {daily_time})")
-    print(f"  Work pool: {work_pool}")
-    print(f"  Config: {config_path}")
+    typer.echo(f"\n  Schedule: {cron} (daily at {daily_time})")
+    typer.echo(f"  Work pool: {work_pool}")
+    typer.echo(f"  Config: {config_path}")
 
     try:
         deployment_id = nightly_backup.deploy(
@@ -54,40 +62,12 @@ def create_deployment(config: dict, work_pool: str = "default") -> bool:
             tags=["production", "backup", "aam-associates"],
             description="Nightly backup of D:\\ drive to LAN and GCS",
         )
-        print(f"  Deployment created: {deployment_id}")
-        return True
+        typer.echo(f"\n  Deployment created: {deployment_id}")
+        typer.echo("\nDeployment ready")
     except Exception as e:
-        print(f"  Failed: {e}")
-        return False
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Create Prefect deployment")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path("config.yaml"),
-        help="Path to config.yaml (default: config.yaml)",
-    )
-    parser.add_argument(
-        "--work-pool",
-        default="default",
-        help="Prefect work pool name (default: default)",
-    )
-    args = parser.parse_args()
-
-    print("=" * 50)
-    print("Backup Agent — Create Deployment")
-    print("=" * 50)
-
-    config = load_config(args.config)
-
-    print("\nCreating deployment...")
-    if not create_deployment(config, work_pool=args.work_pool):
-        sys.exit(1)
-
-    print("\nDeployment ready")
+        typer.echo(f"\n  Failed: {e}")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    app()

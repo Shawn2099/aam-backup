@@ -1,9 +1,7 @@
 """Scanner — walks source drive, classifies files as new/modified/unchanged/deleted."""
 
 import os
-import fnmatch
 from pathlib import Path
-from typing import Callable
 
 import xxhash
 
@@ -33,11 +31,10 @@ def compute_checksum(file_path: Path) -> str:
     return h.hexdigest()
 
 
-def is_excluded_folder(folder_path: str, exclude_folders: list[str]) -> bool:
+def is_excluded_folder(folder_path: Path, exclude_folders: list[str]) -> bool:
     """Check if a folder path matches any excluded folder.
 
     Case-insensitive. Matches exact path or any subfolder.
-    Normalizes separators for cross-platform compatibility.
 
     Args:
         folder_path: Full path to the folder.
@@ -46,10 +43,10 @@ def is_excluded_folder(folder_path: str, exclude_folders: list[str]) -> bool:
     Returns:
         True if the folder should be excluded.
     """
-    folder_normalized = os.path.normpath(folder_path).lower()
+    folder_normalized = folder_path.resolve().as_posix().lower()
     for excluded in exclude_folders:
-        excluded_normalized = os.path.normpath(excluded).lower()
-        if folder_normalized == excluded_normalized or folder_normalized.startswith(excluded_normalized + os.sep):
+        excluded_normalized = Path(excluded).resolve().as_posix().lower()
+        if folder_normalized == excluded_normalized or folder_normalized.startswith(excluded_normalized + "/"):
             return True
     return False
 
@@ -64,8 +61,7 @@ def is_excluded_extension(filename: str, exclude_extensions: list[str]) -> bool:
     Returns:
         True if the extension should be excluded.
     """
-    _, ext = os.path.splitext(filename)
-    return ext.lower() in exclude_extensions
+    return Path(filename).suffix.lower() in exclude_extensions
 
 
 def is_excluded_pattern(filename: str, exclude_patterns: list[str]) -> bool:
@@ -80,6 +76,7 @@ def is_excluded_pattern(filename: str, exclude_patterns: list[str]) -> bool:
     Returns:
         True if the filename should be excluded.
     """
+    import fnmatch
     filename_lower = filename.lower()
     for pattern in exclude_patterns:
         if fnmatch.fnmatch(filename_lower, pattern.lower()):
@@ -112,10 +109,12 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
     current_paths: set[str] = set()
 
     for dirpath, dirnames, filenames in os.walk(source, topdown=True):
+        current_dir = Path(dirpath)
+
         # Prune excluded folders in-place (critical for os.walk descent)
         dirnames[:] = [
             d for d in dirnames
-            if not is_excluded_folder(os.path.join(dirpath, d), exclude_folders)
+            if not is_excluded_folder(current_dir / d, exclude_folders)
         ]
 
         for filename in filenames:
@@ -127,17 +126,17 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
             if is_excluded_pattern(filename, exclude_patterns):
                 continue
 
-            full_path = os.path.join(dirpath, filename)
+            full_path = current_dir / filename
 
             # Step 3: stat
             try:
-                stat_result = os.stat(full_path)
+                stat_result = full_path.stat()
             except OSError:
-                result.cannot_read.append(full_path)
+                result.cannot_read.append(str(full_path))
                 continue
 
             # Step 4: Compute relative path
-            relative_path = os.path.relpath(full_path, source)
+            relative_path = str(full_path.relative_to(source))
 
             # Step 5: Add to current paths
             current_paths.add(relative_path)
@@ -172,7 +171,7 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                     result.unchanged_count += 1
                 else:
                     # Size or mtime differs — compute checksum
-                    checksum = compute_checksum(Path(full_path))
+                    checksum = compute_checksum(full_path)
 
                     if checksum == existing.checksum:
                         # METADATA CHANGE ONLY

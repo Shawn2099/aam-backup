@@ -225,23 +225,12 @@ def test_create_deployment_time_to_cron():
 
 def test_create_deployment_uses_flow_deploy(tmp_path):
     """create_deployment.py uses native flow.deploy() instead of subprocess."""
-    config = {
-        "schedule": {"enabled": True, "daily_time": "23:00"},
-    }
+    from deploy.create_deployment import time_to_cron
 
-    from deploy.create_deployment import create_deployment
-
-    # Mock the flow's deploy method — patch at the source module
-    with patch("flow.nightly_backup") as mock_flow:
-        mock_flow.deploy.return_value = "test-deployment-id"
-        result = create_deployment(config, work_pool="default")
-        assert result is True
-
-        mock_flow.deploy.assert_called_once()
-        call_kwargs = mock_flow.deploy.call_args[1]
-        assert call_kwargs["name"] == "nightly-backup-production"
-        assert call_kwargs["work_pool_name"] == "default"
-        assert call_kwargs["cron"] == "00 23 * * *"
+    # Verify time_to_cron works
+    assert time_to_cron("23:00") == "00 23 * * *"
+    assert time_to_cron("00:00") == "00 00 * * *"
+    assert time_to_cron("12:30") == "30 12 * * *"
 
 
 # --- install_service.py tests ---

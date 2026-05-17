@@ -1,18 +1,20 @@
 """Seed GCS bucket with initial directory structure.
 
 Usage:
-    uv run scripts/seed_cloud.py [--config config.yaml]
+    uv run scripts/seed_cloud.py [--config config.yaml] [--dry-run]
 
 Creates the remote_path directory in the GCS bucket if it doesn't exist.
 This is a one-time setup step for new deployments.
 """
 
-import argparse
 import subprocess
 import sys
 from pathlib import Path
 
+import typer
 import yaml
+
+app = typer.Typer(help="Seed GCS bucket with initial structure")
 
 
 def load_config(config_path: Path) -> dict:
@@ -28,16 +30,16 @@ def seed_bucket(config: dict, dry_run: bool = False) -> bool:
     remote_path = cloud.get("remote_path", "D_Drive_Backup")
 
     if not bucket:
-        print("ERROR: No bucket configured in cloud_backup.bucket")
+        typer.echo("ERROR: No bucket configured in cloud_backup.bucket")
         return False
 
     remote = f"{bucket}:{remote_path}"
 
     if dry_run:
-        print(f"  Would create: {remote}")
+        typer.echo(f"  Would create: {remote}")
         return True
 
-    print(f"  Creating: {remote}")
+    typer.echo(f"  Creating: {remote}")
 
     try:
         result = subprocess.run(
@@ -47,20 +49,19 @@ def seed_bucket(config: dict, dry_run: bool = False) -> bool:
             timeout=30,
         )
         if result.returncode == 0:
-            print(f"  Directory created: {remote}")
+            typer.echo(f"  Directory created: {remote}")
             return True
         else:
-            # mkdir may fail if directory already exists, which is fine
             if "exists" in result.stderr.lower():
-                print(f"  Directory already exists: {remote}")
+                typer.echo(f"  Directory already exists: {remote}")
                 return True
-            print(f"  Failed: {result.stderr.strip()}")
+            typer.echo(f"  Failed: {result.stderr.strip()}")
             return False
     except FileNotFoundError:
-        print("ERROR: rclone not found in PATH")
+        typer.echo("ERROR: rclone not found in PATH")
         return False
     except subprocess.TimeoutExpired:
-        print("ERROR: rclone mkdir timed out")
+        typer.echo("ERROR: rclone mkdir timed out")
         return False
 
 
@@ -72,7 +73,7 @@ def verify_bucket(config: dict) -> bool:
 
     remote = f"{bucket}:{remote_path}"
 
-    print(f"  Verifying: {remote}")
+    typer.echo(f"  Verifying: {remote}")
 
     try:
         result = subprocess.run(
@@ -82,49 +83,38 @@ def verify_bucket(config: dict) -> bool:
             timeout=30,
         )
         if result.returncode == 0:
-            print("  Bucket structure verified")
+            typer.echo("  Bucket structure verified")
             return True
         else:
-            print(f"  Verification failed: {result.stderr.strip()}")
+            typer.echo(f"  Verification failed: {result.stderr.strip()}")
             return False
     except Exception as e:
-        print(f"  Verification error: {e}")
+        typer.echo(f"  Verification error: {e}")
         return False
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Seed GCS bucket with initial structure")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path("config.yaml"),
-        help="Path to config.yaml (default: config.yaml)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be done without making changes",
-    )
-    args = parser.parse_args()
+@app.command()
+def seed(
+    config: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-d", help="Show what would be done"),
+):
+    """Seed GCS bucket with initial structure."""
+    typer.echo("=" * 50)
+    typer.echo("Backup Agent — Seed Cloud Bucket")
+    typer.echo("=" * 50)
 
-    print("=" * 50)
-    print("Backup Agent — Seed Cloud Bucket")
-    print("=" * 50)
+    loaded = load_config(config)
 
-    config = load_config(args.config)
+    typer.echo("\n[1/2] Creating bucket structure...")
+    if not seed_bucket(loaded, dry_run=dry_run):
+        raise typer.Exit(1)
 
-    # Seed
-    print("\n[1/2] Creating bucket structure...")
-    if not seed_bucket(config, dry_run=args.dry_run):
-        sys.exit(1)
+    typer.echo("\n[2/2] Verifying bucket structure...")
+    if not verify_bucket(loaded):
+        raise typer.Exit(1)
 
-    # Verify
-    print("\n[2/2] Verifying bucket structure...")
-    if not verify_bucket(config):
-        sys.exit(1)
-
-    print("\nBucket seeded successfully")
+    typer.echo("\nBucket seeded successfully")
 
 
 if __name__ == "__main__":
-    main()
+    app()

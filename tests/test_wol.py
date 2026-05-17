@@ -1,11 +1,10 @@
 """Tests for wol.py."""
 
-import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.wol import WolTimeout, ensure_server_online, ping_host, send_magic_packet
+from core.wol import WolTimeout, WolError, ensure_server_online, ping_host, send_magic_packet
 
 
 def test_ping_host_success():
@@ -29,23 +28,17 @@ def test_ping_host_timeout():
 
 
 def test_send_magic_packet():
-    """send_magic_packet sends correct payload."""
-    with patch("socket.socket") as mock_socket:
-        mock_instance = MagicMock()
-        mock_socket.return_value = mock_instance
-
-        send_magic_packet("00:11:22:33:44:55")
-
-        mock_instance.sendto.assert_called_once()
-        payload, addr = mock_instance.sendto.call_args[0]
-        assert payload[:6] == b"\xff" * 6
-        assert len(payload) == 6 + 16 * 6  # 6 bytes FF + 16 * MAC
+    """send_magic_packet uses wakeonlan library."""
+    with patch("core.wol.wol_send") as mock_wol:
+        send_magic_packet("00:11:22:33:44:55", "192.168.1.255", 9)
+        mock_wol.assert_called_once_with("00:11:22:33:44:55", ip_address="192.168.1.255", port=9)
 
 
-def test_send_magic_packet_invalid_mac():
-    """send_magic_packet raises WolError for invalid MAC."""
-    with pytest.raises(Exception):
-        send_magic_packet("invalid-mac")
+def test_send_magic_packet_error():
+    """send_magic_packet raises WolError on failure."""
+    with patch("core.wol.wol_send", side_effect=Exception("network error")):
+        with pytest.raises(WolError):
+            send_magic_packet("00:11:22:33:44:55")
 
 
 def test_ensure_server_online_already_up(temp_config):

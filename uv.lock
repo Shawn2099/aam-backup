@@ -17,9 +17,11 @@ dependencies = [
     { name = "keyring" },
     { name = "loguru" },
     { name = "prefect" },
+    { name = "prefect-email" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
+    { name = "typer" },
     { name = "uvicorn" },
     { name = "wakeonlan" },
     { name = "xxhash" },
@@ -43,9 +45,11 @@ requires-dist = [
     { name = "keyring", specifier = ">=25.7.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "prefect", specifier = ">=3.7.1" },
+    { name = "prefect-email", specifier = ">=0.4.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sqlalchemy", specifier = ">=2.0.49" },
+    { name = "typer", specifier = ">=0.25.1" },
     { name = "uvicorn", specifier = ">=0.47.0" },
     { name = "wakeonlan", specifier = ">=3.1.0" },
     { name = "xxhash", specifier = ">=3.7.0" },
@@ -1497,6 +1501,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d6/12/dde80bca1378f19ef5b45bbab75d30367796ff9358eafc21ff3c6aa43b55/prefect-3.7.1.tar.gz", hash = "sha256:7e1c59491f7d31f700539ed9084dade3b7e3bdb6c08b5a417c6a0a7502ba9c9d", size = 14056819, upload-time = "2026-05-16T02:43:21.545Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/88/bc1d779c8680e75fe77746511004a0963984b51aec65f5fb0bc64392c371/prefect-3.7.1-py3-none-any.whl", hash = "sha256:5113ecc7b6274eeea97bac29bdce9b45b3dd6bb5048202b8e5c4e2eacac5f968", size = 14933114, upload-time = "2026-05-16T02:43:17.972Z" },
+]
+
+[[package]]
+name = "prefect-email"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "prefect" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/68/34/db0062b75f79344c89be9ac94ee8d306ae186d23143516b153c476de3447/prefect_email-0.4.2.tar.gz", hash = "sha256:1bf49a47c72ac6276920fbedb385782aaa34d2bd7bd7df09825b5d8fd509a8fa", size = 16123, upload-time = "2025-04-09T17:44:09.212Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/7c/d092fd341f4fa9677c71605e4745b473350b1eb0bd332d91ed911ab3f59c/prefect_email-0.4.2-py3-none-any.whl", hash = "sha256:9d11ed368f8eee4e9a55cafd04e70302acd1a7f585c9e672c4acf3675590a2ee", size = 11054, upload-time = "2025-04-09T17:44:08.141Z" },
 ]
 
 [[package]]

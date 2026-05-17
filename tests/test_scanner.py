@@ -28,14 +28,14 @@ def test_compute_checksum(temp_dir):
 def test_is_excluded_folder():
     """is_excluded_folder matches exact and subfolder paths."""
     excludes = ["D:\\BackupAgent", "D:\\Common Folder"]
-    assert is_excluded_folder("D:\\BackupAgent", excludes) is True
-    assert is_excluded_folder("D:\\Common Folder", excludes) is True
-    assert is_excluded_folder("D:\\AAM WORKS", excludes) is False
+    assert is_excluded_folder(Path("D:\\BackupAgent"), excludes) is True
+    assert is_excluded_folder(Path("D:\\Common Folder"), excludes) is True
+    assert is_excluded_folder(Path("D:\\AAM WORKS"), excludes) is False
     # Linux-style paths with forward slashes
     excludes_linux = ["/home/backup", "/tmp/excluded"]
-    assert is_excluded_folder("/home/backup", excludes_linux) is True
-    assert is_excluded_folder("/home/backup/logs", excludes_linux) is True
-    assert is_excluded_folder("/home/data", excludes_linux) is False
+    assert is_excluded_folder(Path("/home/backup"), excludes_linux) is True
+    assert is_excluded_folder(Path("/home/backup/logs"), excludes_linux) is True
+    assert is_excluded_folder(Path("/home/data"), excludes_linux) is False
 
 
 def test_is_excluded_extension():
