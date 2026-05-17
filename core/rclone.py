@@ -53,13 +53,14 @@ def _classify_exit_code(code: int) -> str:
     return mapping.get(code, "CLOUD_FAILED")
 
 
-def _write_temp_config(temp_dir: Path, job_id: str, gcs_key_path: str) -> Path:
+def _write_temp_config(temp_dir: Path, job_id: str, gcs_key_path: str, gcs_location: str = "asia-south1") -> Path:
     """Write a temporary rclone.conf with restricted ACL.
 
     Args:
         temp_dir: Directory for temp files.
         job_id: Unique identifier for this run.
         gcs_key_path: Path to GCS service account JSON key.
+        gcs_location: GCS region (from config).
 
     Returns:
         Path to the created temp config file.
@@ -72,7 +73,7 @@ def _write_temp_config(temp_dir: Path, job_id: str, gcs_key_path: str) -> Path:
         "type = google cloud storage\n"
         f"service_account_file = {gcs_key_path}\n"
         "bucket_policy_only = true\n"
-        "location = asia-south1\n"
+        f"location = {gcs_location}\n"
     )
 
     config_path.write_text(content, encoding="utf-8")
@@ -170,7 +171,7 @@ def run_rclone_check(
     filter_path = None
 
     try:
-        config_path = _write_temp_config(temp_dir, job_id, gcs_key_path)
+        config_path = _write_temp_config(temp_dir, job_id, gcs_key_path, cloud_config.gcs_location)
         filter_path = _write_filter_file(
             temp_dir, job_id,
             config.backup_scope.exclude_folders,
@@ -295,7 +296,7 @@ def run_rclone(
 
     try:
         # Create temp files
-        config_path = _write_temp_config(temp_dir, job_id, gcs_key_path)
+        config_path = _write_temp_config(temp_dir, job_id, gcs_key_path, cloud_config.gcs_location)
         filter_path = _write_filter_file(
             temp_dir, job_id,
             scope_config.exclude_folders,

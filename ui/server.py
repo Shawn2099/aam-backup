@@ -1,6 +1,7 @@
 """FastAPI status page server."""
 
 import httpx
+import yaml
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -13,14 +14,25 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.cache = None  # Disable template caching
 
 
+def _load_prefect_api_url() -> str:
+    """Load Prefect API URL from config.yaml, falling back to default."""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+            return config.get("ui", {}).get(
+                "prefect_api_url", "http://127.0.0.1:4200/api"
+            )
+        except Exception:
+            pass
+    return "http://127.0.0.1:4200/api"
+
+
 @app.get("/health")
 async def health():
-    """Health check endpoint for NSSM monitoring and external tools.
-
-    Returns:
-        JSON with service status and timestamp.
-    """
-    prefect_api_url = "http://127.0.0.1:4200/api"
+    """Health check endpoint for NSSM monitoring and external tools."""
+    prefect_api_url = _load_prefect_api_url()
     prefect_healthy = False
 
     try:
@@ -41,7 +53,7 @@ async def health():
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Serve the status page with last run info and next scheduled run."""
-    prefect_api_url = "http://127.0.0.1:4200/api"
+    prefect_api_url = _load_prefect_api_url()
 
     last_run = None
     next_run = None
@@ -94,7 +106,7 @@ async def index(request: Request):
 @app.post("/trigger")
 async def trigger_backup():
     """Trigger an immediate backup run via Prefect API."""
-    prefect_api_url = "http://127.0.0.1:4200/api"
+    prefect_api_url = _load_prefect_api_url()
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

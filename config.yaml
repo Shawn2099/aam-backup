@@ -1,4 +1,12 @@
 # ═══════════════════════════════════════════════════
+# BACKUP AUTOMATION SYSTEM — CONFIGURATION
+# ═══════════════════════════════════════════════════
+# Edit this file to change any setting.
+# Restart the PrefectWorker service after changes.
+# No code changes needed.
+# ═══════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════
 # FIRM IDENTIFICATION
 # ═══════════════════════════════════════════════════
 firm:
@@ -22,7 +30,7 @@ schedule:
   daily_time: "23:00"
 
 # ═══════════════════════════════════════════════════
-# BACKUP SCOPE
+# BACKUP SCOPE — WHAT GETS BACKED UP
 # ═══════════════════════════════════════════════════
 backup_scope:
   exclude_folders:
@@ -73,6 +81,7 @@ cloud_backup:
   provider: "gcs"
   bucket: ""
   remote_path: "D_Drive_Backup"
+  gcs_location: "asia-south1"
   bandwidth_limit: "10M"
   chunk_size: "100M"
   retry_count: 3
@@ -94,7 +103,7 @@ ui:
   prefect_api_url: "http://127.0.0.1:4200/api"
 
 # ═══════════════════════════════════════════════════
-# NOTIFICATIONS (for future email automation)
+# NOTIFICATIONS
 # ═══════════════════════════════════════════════════
 notifications:
   smtp_host: ""

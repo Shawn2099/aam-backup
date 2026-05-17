@@ -112,6 +112,7 @@ class CloudBackupConfig(BaseModel):
     provider: str = "gcs"
     bucket: str = ""
     remote_path: str = "D_Drive_Backup"
+    gcs_location: str = "asia-south1"
     bandwidth_limit: str = "10M"
     chunk_size: str = "100M"
     retry_count: int = Field(default=3, ge=1, le=10)
