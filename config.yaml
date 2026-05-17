@@ -1,0 +1,110 @@
+# ═══════════════════════════════════════════════════
+# FIRM IDENTIFICATION
+# ═══════════════════════════════════════════════════
+firm:
+  name: "AAM Associates"
+
+# ═══════════════════════════════════════════════════
+# FILE SYSTEM PATHS
+# ═══════════════════════════════════════════════════
+paths:
+  source_drive: "D:\\"
+  lan_destination: "\\\\192.168.10.10\\hp srv manual backup$"
+  log_directory: "C:\\BackupAgent\\logs"
+  database_path: "C:\\BackupAgent\\manifest.db"
+  rclone_temp_directory: "C:\\BackupAgent\\rclone_temp"
+
+# ═══════════════════════════════════════════════════
+# SCHEDULE
+# ═══════════════════════════════════════════════════
+schedule:
+  enabled: true
+  daily_time: "23:00"
+
+# ═══════════════════════════════════════════════════
+# BACKUP SCOPE
+# ═══════════════════════════════════════════════════
+backup_scope:
+  exclude_folders:
+    - "D:\\WINMAN\\Winman's mir bkup"
+    - "D:\\WINMAN\\winmanbackup"
+    - "D:\\WINMAN\\winman_backup"
+    - "D:\\WINMAN\\winman__backup"
+    - "D:\\Winman's mir bkup"
+    - "D:\\winman_backup"
+    - "D:\\Common Folder"
+    - "D:\\DELL SRV F"
+    - "D:\\Software_IT"
+    - "D:\\BackupAgent"
+  exclude_extensions:
+    - ".lnk"
+    - ".tmp"
+    - ".temp"
+  exclude_patterns:
+    - "~$*"
+    - "desktop.ini"
+    - "Thumbs.db"
+
+# ═══════════════════════════════════════════════════
+# LAN BACKUP
+# ═══════════════════════════════════════════════════
+lan_backup:
+  enabled: true
+  retry_count: 3
+  retry_wait_seconds: 10
+  subprocess_timeout_seconds: 14400
+
+# ═══════════════════════════════════════════════════
+# WAKE-ON-LAN
+# ═══════════════════════════════════════════════════
+wol:
+  enabled: true
+  mac_address: ""
+  server_ip: "192.168.10.10"
+  wake_timeout_seconds: 300
+  ping_interval_seconds: 15
+  stability_wait_seconds: 30
+
+# ═══════════════════════════════════════════════════
+# CLOUD BACKUP
+# ═══════════════════════════════════════════════════
+cloud_backup:
+  enabled: true
+  provider: "gcs"
+  bucket: ""
+  remote_path: "D_Drive_Backup"
+  bandwidth_limit: "10M"
+  chunk_size: "100M"
+  retry_count: 3
+  subprocess_timeout_seconds: 21600
+
+# ═══════════════════════════════════════════════════
+# CLOUD CREDENTIALS
+# ═══════════════════════════════════════════════════
+cloud_credentials:
+  credential_name: "BackupAgent_GCS"
+
+# ═══════════════════════════════════════════════════
+# STATUS UI
+# ═══════════════════════════════════════════════════
+ui:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+  prefect_api_url: "http://127.0.0.1:4200/api"
+
+# ═══════════════════════════════════════════════════
+# NOTIFICATIONS (for future email automation)
+# ═══════════════════════════════════════════════════
+notifications:
+  smtp_host: ""
+  smtp_port: 587
+  smtp_username: ""
+  smtp_password_credential: "BackupAgent_SMTP"
+  sender: ""
+  recipients: []
+  send_on_every_run: true
+  send_on_failure: true
+  weekly_summary_enabled: true
+  weekly_summary_day: "monday"
+  weekly_summary_time: "08:00"
