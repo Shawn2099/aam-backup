@@ -2,6 +2,7 @@
 
 import subprocess
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,9 @@ def _classify_exit_code(code: int) -> str:
 def _parse_robocopy_output(output: str) -> dict[str, int]:
     """Parse Robocopy summary output for file/byte counts.
 
+    Captures all 6 columns from the summary table:
+    Total, Copied, Skipped, Mismatch, FAILED, Extras
+
     Args:
         output: Full Robocopy output text.
 
@@ -80,8 +84,13 @@ def _parse_robocopy_output(output: str) -> dict[str, int]:
 def _parse_failed_files(output: str, source_drive: str) -> set[str]:
     """Parse Robocopy output for failed file paths.
 
-    Robocopy logs failures as:
-        ERROR 5 (0x00000005) Copying File D:\path\to\file.txt
+    Catches all 4 error action types used by Robocopy
+    (per ConvertFrom-RobocopLog):
+
+        ERROR 5 (0x00000005) Copying File D:\\path\\to\\file.txt
+        ERROR 32 (0x00000020) Accessing Source File D:\\path\\to\\file.txt
+        ERROR 32 (0x00000020) Deleting File D:\\path\\to\\file.txt
+        ERROR 5 (0x00000005) Deleting Extra File D:\\path\\to\\file.txt
 
     Args:
         output: Full Robocopy output text.
@@ -93,8 +102,14 @@ def _parse_failed_files(output: str, source_drive: str) -> set[str]:
     failed = set()
     source_prefix = Path(source_drive).resolve().as_posix()
 
-    # Match "ERROR <code> (...) Copying File <full_path>"
-    pattern = re.compile(r"ERROR\s+\d+\s+\([^)]+\)\s+Copying\s+File\s+(.+)$", re.IGNORECASE)
+    # Industry-standard pattern from ConvertFrom-RobocopLog:
+    # Catches Copying File, Accessing Source File, Deleting File, Deleting Extra File
+    pattern = re.compile(
+        r"ERROR\s+\d+\s+\(0x[0-9A-Fa-f]+\)\s+"
+        r"(?:Copying|Accessing\s+Source|Deleting\s+(?:Extra\s+)?)\s+File\s+"
+        r"(.+)$",
+        re.IGNORECASE,
+    )
 
     for line in output.splitlines():
         match = pattern.search(line)
@@ -141,12 +156,15 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
         "/MIR",
         "/Z",
         "/XJ",
-        "/FFT",
+        "/MT:8",
         f"/R:{lan_config.retry_count}",
         f"/W:{lan_config.retry_wait_seconds}",
         "/NP",
         "/BYTES",
         "/TEE",
+        # Safety: prevent /MIR from deleting System Volume Information
+        # on destination (known issue on Windows Server 2012/2016)
+        "/XD", "System Volume Information",
     ]
 
     # Add exclusions
@@ -161,7 +179,16 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
 
     logger.info(f"Running Robocopy: {' '.join(cmd[:4])}...")
 
+    log_path = None
     try:
+        # Microsoft recommends /log with /MT to avoid stdout buffering bottleneck
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".log", prefix="robocopy_", delete=False
+        ) as log_file:
+            log_path = Path(log_file.name)
+
+        cmd.extend(["/log", str(log_path)])
+
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -169,9 +196,12 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
             timeout=lan_config.subprocess_timeout_seconds,
         )
 
+        # Read log file for parsing (more reliable than stdout with /MT)
+        output_text = log_path.read_text(encoding="utf-8")
+
         exit_code = result.returncode
         status = _classify_exit_code(exit_code)
-        stats = _parse_robocopy_output(result.stdout)
+        stats = _parse_robocopy_output(output_text)
 
         robocopy_result = RobocopyResult(
             status=status,
@@ -179,7 +209,7 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
             files_copied=stats["files_copied"],
             bytes_copied=stats["bytes_copied"],
             files_failed=stats["files_failed"],
-            output=result.stdout,
+            output=output_text,
         )
 
         logger.info(
@@ -191,7 +221,7 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
         # On partial failure, only mark files that actually succeeded
         if status in ("LAN_COMPLETE", "LAN_PARTIAL"):
             all_changed = [f.relative_path for f in scan_result.new_files + scan_result.modified_files]
-            failed_paths = _parse_failed_files(result.stdout, paths_config.source_drive)
+            failed_paths = _parse_failed_files(output_text, paths_config.source_drive)
 
             # Only mark files that were NOT in the failed list
             successful_paths = [p for p in all_changed if p not in failed_paths]
@@ -231,6 +261,12 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
     except OSError as e:
         logger.critical(f"Robocopy failed with OS error: {e}")
         return RobocopyResult(status="LAN_FAILED", exit_code=-1)
+    finally:
+        if log_path and log_path.exists():
+            try:
+                log_path.unlink()
+            except OSError:
+                pass
 
 
 def _compute_file_checksum(file_path: Path) -> str:

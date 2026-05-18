@@ -2,13 +2,18 @@
 REM ═══════════════════════════════════════════════════
 REM Install Windows Services for Backup Automation
 REM ═══════════════════════════════════════════════════
-REM This script installs three Windows services via NSSM:
+REM This script installs three Windows services via Servy:
 REM   1. PrefectServer — Prefect workflow server
 REM   2. PrefectWorker — Prefect worker (executes backup flows)
 REM   3. BackupUI — FastAPI status page
 REM
 REM Usage: Run as Administrator
 REM   install_services.bat [--service-account DOMAIN\user] [--password password]
+REM
+REM Prerequisites:
+REM   - Servy installed (https://github.com/aliostad/Servy)
+REM   - Python 3.12+ installed for all users
+REM   - Project files extracted to C:\BackupAgent
 REM ═══════════════════════════════════════════════════
 
 setlocal enabledelayedexpansion
@@ -39,33 +44,33 @@ REM --- Configuration ---
 set BACKUP_DIR=C:\BackupAgent
 set PYTHON_DIR=C:\Python312
 set PYTHON_EXE=%PYTHON_DIR%\python.exe
-set PIP_EXE=%PYTHON_DIR%\Scripts\pip.exe
 set PREFECT_EXE=%PYTHON_DIR%\Scripts\prefect.exe
-set UV_EXE=%PYTHON_DIR%\Scripts\uv.exe
-set NSSM_EXE=nssm
+set SERVY_EXE=servy
 set LOG_DIR=%BACKUP_DIR%\logs
 set PREFECT_API_URL=http://127.0.0.1:4200/api
 set PREFECT_DB_URL=sqlite+aiosqlite:///%BACKUP_DIR%/prefect.db
+set HEALTH_CHECK_URL=http://127.0.0.1:8080/health
 
 REM --- Verify prerequisites ---
 echo ================================================
-echo Backup Agent — Install Windows Services
+echo Backup Agent — Install Windows Services (Servy)
 echo ================================================
 echo.
 
 echo [1/6] Checking prerequisites...
 
-where %NSSM_EXE% >nul 2>&1
+where %SERVY_EXE% >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: NSSM not found in PATH.
-    echo Download from https://nssm.cc/download and add to PATH.
+    echo ERROR: Servy not found in PATH.
+    echo Download from https://github.com/aliostad/Servy/releases
+    echo Add servy.exe to PATH or place in system directory.
     pause
     exit /b 1
 )
 
 if not exist "%PYTHON_EXE%" (
     echo ERROR: Python not found at %PYTHON_EXE%
-    echo Install Python 3.11+ for all users.
+    echo Install Python 3.12+ for all users.
     pause
     exit /b 1
 )
@@ -96,61 +101,66 @@ echo.
 
 REM --- Install PrefectServer ---
 echo [3/6] Installing PrefectServer...
-%NSSM_EXE% install PrefectServer "%PREFECT_EXE%" server start --host 0.0.0.0 --port 4200
-%NSSM_EXE% set PrefectServer AppDirectory "%BACKUP_DIR%"
-%NSSM_EXE% set PrefectServer AppEnvironmentExtra PREFECT_API_DATABASE_CONNECTION_URL=%PREFECT_DB_URL%
-%NSSM_EXE% set PrefectServer Stdout "%LOG_DIR%\prefect_server_stdout.log"
-%NSSM_EXE% set PrefectServer Stderr "%LOG_DIR%\prefect_server_stderr.log"
-%NSSM_EXE% set PrefectServer Start SERVICE_AUTO_START
-%NSSM_EXE% set PrefectServer AppRestartDelay 10000
-%NSSM_EXE% set PrefectServer AppExit Default Restart
+%SERVY_EXE% create PrefectServer ^
+    --command "%PREFECT_EXE%" ^
+    --args "server start --host 0.0.0.0 --port 4200" ^
+    --working-directory "%BACKUP_DIR%" ^
+    --log-file "%LOG_DIR%\prefect_server.log" ^
+    --log-rotate ^
+    --log-max-size-mb 50 ^
+    --log-max-files 5 ^
+    --restart-on-failure ^
+    --restart-delay-seconds 10 ^
+    --start-mode automatic
 echo PrefectServer installed
 echo.
 
 REM --- Install PrefectWorker ---
 echo [4/6] Installing PrefectWorker...
-if /i "%SERVICE_ACCOUNT%"=="LocalSystem" (
-    %NSSM_EXE% install PrefectWorker "%PREFECT_EXE%" worker start --pool default --type process
-) else (
-    %NSSM_EXE% install PrefectWorker "%PREFECT_EXE%" worker start --pool default --type process
-    if defined SERVICE_PASSWORD (
-        %NSSM_EXE% set PrefectWorker ObjectName "%SERVICE_ACCOUNT%" "%SERVICE_PASSWORD%"
-    ) else (
-        echo WARNING: No password provided for service account.
-        echo You will be prompted to set it manually.
-        %NSSM_EXE% edit PrefectWorker
-    )
-)
-%NSSM_EXE% set PrefectWorker AppDirectory "%BACKUP_DIR%"
-%NSSM_EXE% set PrefectWorker AppEnvironmentExtra PREFECT_API_URL=%PREFECT_API_URL%
-%NSSM_EXE% set PrefectWorker Stdout "%LOG_DIR%\prefect_worker_stdout.log"
-%NSSM_EXE% set PrefectWorker Stderr "%LOG_DIR%\prefect_worker_stderr.log"
-%NSSM_EXE% set PrefectWorker Start SERVICE_AUTO_START
-%NSSM_EXE% set PrefectWorker AppRestartDelay 30000
-%NSSM_EXE% set PrefectWorker AppExit Default Restart
+%SERVY_EXE% create PrefectWorker ^
+    --command "%PREFECT_EXE%" ^
+    --args "worker start --pool default --type process" ^
+    --working-directory "%BACKUP_DIR%" ^
+    --log-file "%LOG_DIR%\prefect_worker.log" ^
+    --log-rotate ^
+    --log-max-size-mb 50 ^
+    --log-max-files 5 ^
+    --restart-on-failure ^
+    --restart-delay-seconds 30 ^
+    --start-mode automatic ^
+    --dependency PrefectServer ^
+    --env PREFECT_API_URL=%PREFECT_API_URL%
 echo PrefectWorker installed
 echo.
 
 REM --- Install BackupUI ---
 echo [5/6] Installing BackupUI...
-%NSSM_EXE% install BackupUI "%PYTHON_EXE%" -m uvicorn ui.server:app --host 0.0.0.0 --port 8080
-%NSSM_EXE% set BackupUI AppDirectory "%BACKUP_DIR%"
-%NSSM_EXE% set BackupUI AppEnvironmentExtra PREFECT_API_URL=%PREFECT_API_URL%
-%NSSM_EXE% set BackupUI Stdout "%LOG_DIR%\ui_stdout.log"
-%NSSM_EXE% set BackupUI Stderr "%LOG_DIR%\ui_stderr.log"
-%NSSM_EXE% set BackupUI Start SERVICE_AUTO_START
-%NSSM_EXE% set BackupUI AppRestartDelay 10000
-%NSSM_EXE% set BackupUI AppExit Default Restart
+%SERVY_EXE% create BackupUI ^
+    --command "%PYTHON_EXE%" ^
+    --args "-m uvicorn ui.server:app --host 0.0.0.0 --port 8080" ^
+    --working-directory "%BACKUP_DIR%" ^
+    --log-file "%LOG_DIR%\backup_ui.log" ^
+    --log-rotate ^
+    --log-max-size-mb 20 ^
+    --log-max-files 3 ^
+    --restart-on-failure ^
+    --restart-delay-seconds 10 ^
+    --start-mode automatic ^
+    --health-check-url %HEALTH_CHECK_URL% ^
+    --health-check-interval-seconds 30 ^
+    --health-check-timeout-seconds 5 ^
+    --health-check-unhealthy-threshold 3 ^
+    --env PREFECT_API_URL=%PREFECT_API_URL%
 echo BackupUI installed
 echo.
 
 REM --- Start services ---
 echo [6/7] Starting services...
-net start PrefectServer
+%SERVY_EXE% start PrefectServer
 timeout /t 5 /nobreak >nul
-net start PrefectWorker
+%SERVY_EXE% start PrefectWorker
 timeout /t 3 /nobreak >nul
-net start BackupUI
+%SERVY_EXE% start BackupUI
 echo.
 
 REM --- Create work pool ---
@@ -173,6 +183,12 @@ echo Services:
 echo   PrefectServer  — http://localhost:4200
 echo   PrefectWorker  — executes backup flows
 echo   BackupUI       — http://localhost:8080
+echo.
+echo Service Management:
+echo   servy status              — view all services
+echo   servy stop ^<name^>         — stop a service
+echo   servy restart ^<name^>      — restart a service
+echo   servy logs ^<name^>         — view service logs
 echo.
 echo Next steps:
 echo   1. Create deployment: uv run deploy/create_deployment.py create

@@ -236,46 +236,46 @@ def test_create_deployment_uses_flow_deploy(tmp_path):
 # --- install_service.py tests ---
 
 
-def test_install_service_find_nssm():
-    """install_service.py finds NSSM in common locations."""
-    from deploy.install_service import find_nssm
+def test_install_service_find_servy():
+    """install_service.py finds Servy in common locations."""
+    from deploy.install_service import find_servy
 
     with patch.object(Path, "exists", return_value=False):
-        with patch("shutil.which", return_value="C:\\nssm\\nssm.exe"):
-            result = find_nssm()
+        with patch("shutil.which", return_value="C:\\servy\\servy.exe"):
+            result = find_servy()
             assert result is not None
-            assert "nssm.exe" in str(result)
+            assert "servy.exe" in str(result)
 
 
-def test_install_service_find_nssm_explicit_path(tmp_path):
-    """install_service.py uses explicit NSSM path."""
-    from deploy.install_service import find_nssm
+def test_install_service_find_servy_explicit_path(tmp_path):
+    """install_service.py uses explicit Servy path."""
+    from deploy.install_service import find_servy
 
-    fake_nssm = tmp_path / "nssm.exe"
-    fake_nssm.touch()
+    fake_servy = tmp_path / "servy.exe"
+    fake_servy.touch()
 
-    result = find_nssm(str(fake_nssm))
-    assert result == fake_nssm
+    result = find_servy(str(fake_servy))
+    assert result == fake_servy
 
 
 def test_install_service_not_found():
-    """install_service.py returns None when NSSM not found."""
-    from deploy.install_service import find_nssm
+    """install_service.py returns None when Servy not found."""
+    from deploy.install_service import find_servy
 
     with patch.object(Path, "exists", return_value=False):
         with patch("shutil.which", return_value=None):
-            result = find_nssm()
+            result = find_servy()
             assert result is None
 
 
 # --- uninstall_service.py tests ---
 
 
-def test_uninstall_service_find_nssm():
-    """uninstall_service.py finds NSSM."""
-    from deploy.uninstall_service import find_nssm
+def test_uninstall_service_find_servy():
+    """uninstall_service.py finds Servy."""
+    from deploy.uninstall_service import find_servy
 
     with patch.object(Path, "exists", return_value=False):
-        with patch("shutil.which", return_value="C:\\nssm\\nssm.exe"):
-            result = find_nssm()
+        with patch("shutil.which", return_value="C:\\servy\\servy.exe"):
+            result = find_servy()
             assert result is not None

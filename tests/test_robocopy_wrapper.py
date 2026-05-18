@@ -82,3 +82,23 @@ def test_robocopy_file_not_found(temp_config):
     with patch("subprocess.run", side_effect=FileNotFoundError):
         result = run_robocopy(temp_config, ScanResult(), MagicMock())
         assert result.status == "LAN_FAILED"
+
+
+def test_robocopy_includes_system_volume_exclusion(temp_config):
+    """Robocopy command includes /XD 'System Volume Information' for safety."""
+    temp_config.lan_backup.enabled = True
+    temp_config.lan_backup.retry_count = 0
+
+    captured_cmd = None
+
+    def capture_run(cmd, *args, **kwargs):
+        nonlocal captured_cmd
+        captured_cmd = cmd
+        raise FileNotFoundError("robocopy not found")
+
+    with patch("subprocess.run", side_effect=capture_run):
+        run_robocopy(temp_config, ScanResult(), MagicMock())
+
+    assert captured_cmd is not None
+    assert "/XD" in captured_cmd
+    assert "System Volume Information" in captured_cmd

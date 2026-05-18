@@ -20,35 +20,47 @@ class RcloneResult:
 
 
 def _classify_exit_code(code: int) -> str:
-    """Classify Rclone exit code.
+    """Classify Rclone exit code per official documentation.
 
-    Code 0: CLOUD_COMPLETE
-    Code 1: CLOUD_FAILED (syntax error)
-    Code 2: CLOUD_PARTIAL
-    Code 3: CLOUD_FAILED (source/destination not found)
-    Code 4: CLOUD_PARTIAL
-    Code 5: CLOUD_FAILED (temporary network error — Prefect retries at task level)
-    Code 6: CLOUD_PARTIAL
-    Code 7: CLOUD_FAILED
-    Code 8: CLOUD_PARTIAL
-    Other: CLOUD_FAILED
+    Official rclone exit codes:
+        0 — Success
+        1 — Syntax or usage error
+        2 — Directory or file not found (source/destination error)
+        3 — Source or destination does not exist
+        4 — File not found (less serious, often transient)
+        5 — Temporary network error (retryable — Prefect handles at task level)
+        6 — Less serious error (e.g., partial transfer issues)
+        7 — Fatal error (authentication failure, bucket not found, etc.)
+        8 — Transfer limit exceeded (--max-transfer or --max-backlog)
+        9 — No files transferred (--error-on-no-transfer was set)
+       10 — Duration limit exceeded (--max-duration)
 
-    Args:
-        code: Rclone exit code.
-
-    Returns:
-        CLOUD_COMPLETE, CLOUD_PARTIAL, or CLOUD_FAILED.
+    Mapping for our backup flow:
+        0 → CLOUD_COMPLETE (success)
+        1 → CLOUD_FAILED (syntax/usage — config problem)
+        2 → CLOUD_FAILED (source/dest error — needs investigation)
+        3 → CLOUD_FAILED (source/dest missing — hard failure)
+        4 → CLOUD_PARTIAL (file not found — may be transient)
+        5 → CLOUD_PARTIAL (network error — Prefect retries at task level)
+        6 → CLOUD_PARTIAL (less serious — some files transferred)
+        7 → CLOUD_FAILED (fatal — auth, bucket, or critical error)
+        8 → CLOUD_FAILED (transfer limit — should not happen in normal operation)
+        9 → CLOUD_COMPLETE (no files to transfer — source already matches dest)
+       10 → CLOUD_PARTIAL (duration limit hit — some files may have transferred)
+    Other → CLOUD_FAILED
     """
     mapping = {
         0: "CLOUD_COMPLETE",
         1: "CLOUD_FAILED",
-        2: "CLOUD_PARTIAL",
+        2: "CLOUD_FAILED",
         3: "CLOUD_FAILED",
         4: "CLOUD_PARTIAL",
-        5: "CLOUD_FAILED",
+        5: "CLOUD_PARTIAL",
         6: "CLOUD_PARTIAL",
         7: "CLOUD_FAILED",
-        8: "CLOUD_PARTIAL",
+        8: "CLOUD_FAILED",
+        9: "CLOUD_COMPLETE",
+        10: "CLOUD_PARTIAL",
     }
     return mapping.get(code, "CLOUD_FAILED")
 
@@ -187,6 +199,11 @@ def run_rclone_check(
             remote,
             "--config", str(config_path),
             "--filter-from", str(filter_path),
+            # GCS-specific optimizations
+            "--fast-list",
+            "--gcs-no-check-bucket",
+            "--modify-window", "1s",
+            # Progress and logging
             "--stats", "60s",
             "--log-level", "INFO",
             "--use-json-log",
@@ -305,7 +322,8 @@ def run_rclone(
             paths_config.source_drive,
         )
 
-        # Build command
+        # Build command — GCS-optimized flags based on official rclone docs
+        # and GCS backend best practices for large file syncs
         remote = f"gcs_backup:{cloud_config.bucket}/{cloud_config.remote_path}"
         cmd = [
             "rclone", "sync",
@@ -313,17 +331,28 @@ def run_rclone(
             remote,
             "--config", str(config_path),
             "--filter-from", str(filter_path),
+            # Bandwidth and chunk size (from config)
             "--bwlimit", cloud_config.bandwidth_limit,
             "--gcs-chunk-size", cloud_config.chunk_size,
-            "--transfers", "4",
-            "--checkers", "8",
+            # Parallelism — tuned for GCS with 200K+ files
+            "--transfers", "4",       # Concurrent file transfers
+            "--checkers", "16",       # Parallel directory listing (default 8, doubled for GCS)
+            # GCS-specific optimizations
+            "--fast-list",            # Use GCS recursive ListObjects API (fewer API calls)
+            "--gcs-no-check-bucket",  # Skip bucket existence check (saves 1 transaction per run)
+            "--gcs-storage-class", cloud_config.storage_class,  # Set object class on upload
+            "--modify-window", "1s",  # Avoid unnecessary metadata updates (GCS has 1s precision)
+            # Retry and reliability
             "--retries", str(cloud_config.retry_count),
             "--retries-sleep", "30s",
-            "--stats", "300s",
+            # Progress visibility — 60s stats so march phase is observable
+            "--stats", "60s",
             "--stats-log-level", "INFO",
+            # Logging
             "--log-level", "INFO",
             "--use-json-log",
-            "--no-traverse",
+            # Sync behavior
+            "--no-traverse",          # Don't list destination for transfers (only for deletions)
         ]
 
         logger.info(f"Running Rclone sync to {remote}")

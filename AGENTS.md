@@ -67,7 +67,7 @@ Soft delete, custom versioning, anomaly detection, canary files, integrity verif
 | 6 | VSS for locked Tally/Winman files (if apps run overnight) | Important | ✅ Done — `core/vss.py` + `tasks/vss_task.py`, fallback to direct if fails |
 | 7 | Alerting on extended "no changes" periods | Important | ✅ Done — `alerts.no_changes_warning_days` config + flow check |
 | 8 | `.env.example` for deployment documentation | Nice-to-have | ✅ Done |
-| 9 | UI `/health` endpoint for NSSM monitoring | Nice-to-have | ✅ Done |
+| 9 | UI `/health` endpoint for Servy monitoring | Nice-to-have | ✅ Done |
 | 10 | Backup metrics collection (duration, throughput trends) | Nice-to-have | ✅ Done — `tasks/metrics_task.py`, JSONL per run |
 | 11 | Config versioning / backup | Nice-to-have | ✅ Done — `tasks/config_version_task.py`, keeps last 30 |
 | 12 | Graceful shutdown handling | Nice-to-have | Skipped — Prefect handles cleanup on normal cancellation |
@@ -81,7 +81,7 @@ models/      — Pydantic config models, SQLAlchemy manifest model, ScanResult/F
 tasks/       — Prefect task wrappers (config_task, scan_task, lan_task, cloud_task)
 ui/          — FastAPI server + templates/status.html
 scripts/     — Deployment & setup scripts (standalone, not part of flow)
-deploy/      — NSSM service install/uninstall, Prefect deployment creation
+deploy/      — Servy service install/uninstall, Prefect deployment creation
 tests/       — Pytest suite
 flow.py      — Prefect flow definition (entry point for worker)
 ```

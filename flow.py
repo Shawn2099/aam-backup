@@ -23,50 +23,16 @@ from tasks.lan_task import lan_backup_task
 from tasks.log_backup_task import backup_logs_cloud_task
 from tasks.maintenance_task import maintain_manifest_db_task
 from tasks.manifest_backup_task import backup_manifest_db_task
+from tasks.manifest_rollback_task import pre_run_manifest_backup_task
 from tasks.metrics_task import collect_metrics_task
+from tasks.no_run_alert_task import check_backup_not_run_alert_task
 from tasks.preflight_task import preflight_task
 from tasks.report_task import generate_report_task
 from tasks.scan_task import scan_task
 from tasks.test_restore_task import test_restore_task
 from tasks.verification_task import verify_cloud_integrity_task
 from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
-
-
-class ConcurrencyGuard:
-    """File-based lock to prevent concurrent backup runs.
-
-    BUG FIX #1: Prevents two backups from running simultaneously,
-    which would corrupt manifest.db via concurrent writes.
-    """
-
-    def __init__(self, lock_path: str | Path):
-        self._lock_file = Path(lock_path)
-        self._acquired = False
-
-    def acquire(self) -> bool:
-        """Try to acquire the lock. Returns True if successful."""
-        if self._lock_file.exists():
-            try:
-                # Check if the process that created the lock is still running
-                pid = int(self._lock_file.read_text().strip())
-                # On Windows, this will fail if the process is gone
-                os.kill(pid, 0)
-                return False  # Process still running — another backup is active
-            except (ValueError, ProcessLookupError, PermissionError):
-                # Stale lock — remove it
-                self._lock_file.unlink(missing_ok=True)
-
-        # Create lock file with current PID
-        self._lock_file.parent.mkdir(parents=True, exist_ok=True)
-        self._lock_file.write_text(str(os.getpid()))
-        self._acquired = True
-        return True
-
-    def release(self):
-        """Release the lock."""
-        if self._acquired:
-            self._lock_file.unlink(missing_ok=True)
-            self._acquired = False
+from tasks.archive_task import yearly_archive_task
 
 
 def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
@@ -270,13 +236,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
     log_dir = Path(os.environ.get("BACKUP_LOG_DIR", "logs"))
     configure_logging(log_dir)
 
-    # BUG FIX #1: Concurrency guard — prevent simultaneous backup runs
-    lock_path = log_dir / "backup.lock"
-    guard = ConcurrencyGuard(lock_path)
-    if not guard.acquire():
-        logger.error("Another backup is already running — aborting this run")
-        raise RuntimeError("Backup already in progress — concurrency guard prevented duplicate run")
-
     try:
         # Track VSS state for cleanup (must survive exceptions)
         vss_enabled = False
@@ -290,6 +249,49 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
             version_config_task(config_path, config.paths.log_directory)
         except Exception as e:
             logger.warning(f"Config versioning failed (non-critical): {e}")
+
+        # GAP #2: Pre-run manifest backup for rollback protection
+        try:
+            rollback_result = pre_run_manifest_backup_task(
+                config.paths.database_path,
+                config.paths.log_directory,
+                max_backups=3,
+            )
+            if rollback_result.get("status") == "SUCCESS":
+                logger.info(
+                    f"Pre-run manifest backup created: {rollback_result['backup_path']} "
+                    f"({rollback_result['backup_size_bytes']} bytes)"
+                )
+            else:
+                logger.warning(
+                    f"Pre-run manifest backup skipped: {rollback_result.get('reason', 'unknown')}"
+                )
+        except Exception as e:
+            logger.warning(f"Pre-run manifest backup failed (non-critical): {e}")
+
+        # GAP #3: Check if backup hasn't run for configured number of days
+        try:
+            no_run_alert = check_backup_not_run_alert_task(
+                config.paths.log_directory,
+                config.alerts.backup_not_run_warning_days,
+            )
+            if no_run_alert.get("status") == "ALERT":
+                logger.warning(f"BACKUP NOT RUN ALERT: {no_run_alert['message']}")
+                # Send email notification if configured
+                if config.notifications.send_on_failure:
+                    try:
+                        from prefect.context import get_run_context
+                        ctx = get_run_context()
+                        flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
+                        _send_failure_email(
+                            config_path,
+                            flow_run_id,
+                            f"Backup not run alert: {no_run_alert['message']}",
+                        )
+                    except Exception as email_err:
+                        logger.warning(f"Failed to send no-run alert email: {email_err}")
+        except Exception as e:
+            logger.warning(f"No-run alert check failed (non-critical): {e}")
 
         # BUG FIX #5: Pre-backup manifest backup — protects against corruption during this run
         try:
@@ -554,6 +556,48 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 f"check network speed and source drive health"
             )
 
+        # Yearly archive: move previous FY data from active to archive prefix
+        if config.cloud_archive.enabled and config.cloud_backup.enabled:
+            try:
+                from datetime import datetime, timezone
+                today = datetime.now(timezone.utc)
+                today_md = today.strftime("%m-%d")
+                trigger_md = config.cloud_archive.trigger_date
+
+                if today_md >= trigger_md:
+                    logger.info(
+                        f"Archive trigger date reached ({today_md} >= {trigger_md}) — "
+                        f"checking if archive is needed for {today.year}"
+                    )
+                    archive_result = yearly_archive_task(
+                        bucket=config.cloud_backup.bucket,
+                        gcs_key_path=gcs_key_path,
+                        active_path=config.cloud_archive.active_path,
+                        archive_path=config.cloud_archive.archive_path,
+                        log_directory=config.paths.log_directory,
+                    )
+                    if archive_result.get("status") == "SUCCESS":
+                        logger.info(
+                            f"Yearly archive completed: "
+                            f"{archive_result['source']} → {archive_result['destination']}"
+                        )
+                    elif archive_result.get("status") == "SKIPPED":
+                        logger.info(f"Yearly archive skipped: {archive_result.get('reason')}")
+                    else:
+                        logger.warning(
+                            f"Yearly archive failed: {archive_result.get('status')} — "
+                            f"{archive_result.get('error', 'unknown')}"
+                        )
+                else:
+                    days_until = (
+                        datetime(today.year, int(trigger_md[:2]), int(trigger_md[3:])) - today
+                    ).days
+                    logger.info(
+                        f"Archive not yet due: {days_until} days until trigger date ({trigger_md})"
+                    )
+            except Exception as e:
+                logger.warning(f"Yearly archive check failed (non-critical): {e}")
+
         # Test restore: verify random files from LAN and GCS
         if config.test_restore.enabled:
             try:
@@ -648,9 +692,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 logger.info("VSS shadow copy deleted")
             except Exception as e:
                 logger.warning(f"VSS cleanup failed: {e}")
-
-        # BUG FIX #1: Release concurrency guard
-        guard.release()
 
 
 if __name__ == "__main__":

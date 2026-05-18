@@ -21,9 +21,9 @@ def test_classify_exit_code_0():
     assert _classify_exit_code(0) == "CLOUD_COMPLETE"
 
 
-def test_classify_exit_code_5_failed():
-    """Exit code 5 → CLOUD_FAILED (Prefect handles retries at task level)."""
-    assert _classify_exit_code(5) == "CLOUD_FAILED"
+def test_classify_exit_code_5_partial():
+    """Exit code 5 → CLOUD_PARTIAL (temporary network error — Prefect retries at task level)."""
+    assert _classify_exit_code(5) == "CLOUD_PARTIAL"
 
 
 def test_classify_exit_code_7_failed():
@@ -31,9 +31,44 @@ def test_classify_exit_code_7_failed():
     assert _classify_exit_code(7) == "CLOUD_FAILED"
 
 
-def test_classify_exit_code_2_partial():
-    """Exit code 2 → CLOUD_PARTIAL."""
-    assert _classify_exit_code(2) == "CLOUD_PARTIAL"
+def test_classify_exit_code_2_failed():
+    """Exit code 2 → CLOUD_FAILED (source/destination error — needs investigation)."""
+    assert _classify_exit_code(2) == "CLOUD_FAILED"
+
+
+def test_classify_exit_code_3_failed():
+    """Exit code 3 → CLOUD_FAILED (source/destination missing — hard failure)."""
+    assert _classify_exit_code(3) == "CLOUD_FAILED"
+
+
+def test_classify_exit_code_4_partial():
+    """Exit code 4 → CLOUD_PARTIAL (file not found — may be transient)."""
+    assert _classify_exit_code(4) == "CLOUD_PARTIAL"
+
+
+def test_classify_exit_code_6_partial():
+    """Exit code 6 → CLOUD_PARTIAL (less serious error — some files transferred)."""
+    assert _classify_exit_code(6) == "CLOUD_PARTIAL"
+
+
+def test_classify_exit_code_8_failed():
+    """Exit code 8 → CLOUD_FAILED (transfer limit exceeded — should not happen in normal operation)."""
+    assert _classify_exit_code(8) == "CLOUD_FAILED"
+
+
+def test_classify_exit_code_9_complete():
+    """Exit code 9 → CLOUD_COMPLETE (no files to transfer — source already matches dest)."""
+    assert _classify_exit_code(9) == "CLOUD_COMPLETE"
+
+
+def test_classify_exit_code_10_partial():
+    """Exit code 10 → CLOUD_PARTIAL (duration limit hit — some files may have transferred)."""
+    assert _classify_exit_code(10) == "CLOUD_PARTIAL"
+
+
+def test_classify_exit_code_unknown_failed():
+    """Unknown exit code → CLOUD_FAILED."""
+    assert _classify_exit_code(99) == "CLOUD_FAILED"
 
 
 def test_temp_config_created_and_deleted(temp_dir):

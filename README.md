@@ -38,7 +38,7 @@ Both destinations mirror source exactly. Deletions propagate. GCS retains 1 olde
 - **Post-backup integrity** — `rclone check` verification after cloud backup, xxHash64 checksum verification on LAN
 - **Automated test restore** — Periodic random file verification from both LAN and GCS
 - **Status UI** — FastAPI + Alpine.js + Tailwind, last run status, manual trigger, `/health`, `/metrics` endpoints
-- **Deployment scripts** — Config validation, credential setup, GCS seeding, NSSM Windows service
+- **Deployment scripts** — Config validation, credential setup, GCS seeding, Servy Windows service
 - **Metrics collection** — JSONL per-run metrics for trend analysis (throughput, capacity, file counts)
 - **Config versioning** — Automatic backup of config.yaml before each run + copy to LAN/GCS
 - **Log backup** — Syncs log files to cloud for disaster recovery
@@ -77,7 +77,7 @@ models/      — Pydantic config models, SQLAlchemy manifest model, ScanResult d
 tasks/       — Prefect task wrappers (config, scan, lan, cloud, preflight, report, metrics, test_restore)
 ui/          — FastAPI server + status page template
 scripts/     — CLI tools (validate, credentials, connections, seed, restore)
-deploy/      — Deployment scripts (create deployment, NSSM install/uninstall)
+deploy/      — Deployment scripts (create deployment, Servy install/uninstall)
 tests/       — Pytest suite (210 tests)
 flow.py      — Prefect flow definition (entry point)
 config.yaml  — Configuration template
@@ -95,7 +95,7 @@ uv run pytest tests/ -v
 - Windows Server 2016 (production) / Linux (development)
 - Robocopy (Windows built-in)
 - Rclone
-- NSSM (Windows service wrapper)
+- Servy (Windows service wrapper)
 - Prefect 3.x (self-hosted)
 
 ### Optional Dependencies
@@ -114,7 +114,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete step-by-step deployment guide on
 
 ### Quick Deploy Checklist
 
-1. [ ] Install Python 3.12+, uv, rclone, NSSM
+1. [ ] Install Python 3.12+, uv, rclone, Servy
 2. [ ] Create GCS bucket + service account
 3. [ ] Copy project files to `C:\BackupAgent\`
 4. [ ] Fill in `config.yaml` (IPs, MAC, bucket, SMTP)

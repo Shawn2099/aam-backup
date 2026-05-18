@@ -10,5 +10,8 @@
     "verifier": true,
     "nyquist_validation": true,
     "auto_advance": true
+  },
+  "graphify": {
+    "enabled": true
   }
 }

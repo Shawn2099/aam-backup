@@ -8,7 +8,7 @@ Complete step-by-step guide for deploying the backup system on a fresh Windows S
 |------|---------|----------|
 | Python | 3.12+ | https://www.python.org/downloads/windows/ |
 | Rclone | Latest | https://rclone.org/downloads/ |
-| NSSM | 2.24+ | https://nssm.cc/download |
+| Servy | Latest | https://github.com/aliostad/Servy/releases |
 | GCS Bucket | — | Create via Google Cloud Console |
 
 ## Phase 1: Install Prerequisites
@@ -41,13 +41,13 @@ uv --version
    rclone version
    ```
 
-### 1.4 Install NSSM (Windows service wrapper)
+### 1.4 Install Servy (Windows service wrapper)
 
-1. Download from https://nssm.cc/download
-2. Extract `nssm.exe` (64-bit) to `C:\Windows\System32\`
+1. Download latest release from https://github.com/aliostad/Servy/releases
+2. Extract `servy.exe` to `C:\Windows\System32\` (or any PATH directory)
 3. Verify:
    ```cmd
-   nssm version
+   servy --version
    ```
 
 ### 1.5 Create GCS Bucket
@@ -336,11 +336,11 @@ where rclone
 
 ### Python Version Mismatch
 
-If services reference wrong Python path, edit with NSSM:
+If services reference wrong Python path, edit with Servy:
 ```cmd
-nssm edit PrefectWorker
+servy edit PrefectWorker
 ```
-Update **Application path** to correct Python location.
+Update application path to correct Python location.
 
 ### GCS Access Denied
 
@@ -375,4 +375,4 @@ This stops and removes all three Windows services.
 | Metrics | `C:\BackupAgent\logs\backup_metrics.jsonl` | Run metrics |
 | Config versions | `C:\BackupAgent\logs\config_versions\` | Timestamped config backups |
 | Rclone temp | `C:\BackupAgent\rclone_temp\` | Temporary rclone configs |
-| Service logs | `C:\BackupAgent\logs\prefect_*.log` | NSSM service output |
+| Service logs | `C:\BackupAgent\logs\*.log` | Servy service output (with rotation) |

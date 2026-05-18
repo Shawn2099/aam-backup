@@ -429,6 +429,105 @@ def check_lan_destination(path: str, server_ip: str, min_free_gb: float = 50.0) 
         )
 
 
+def check_lan_destination_capacity(source_path: str, lan_path: str, min_free_gb: float = 50.0) -> CheckResult:
+    """GAP #4: Check LAN destination has enough space for source data.
+
+    Compares source drive total size against LAN destination free space
+    to ensure there's room for the backup.
+
+    Args:
+        source_path: Source drive path.
+        lan_path: LAN destination path.
+        min_free_gb: Minimum free space to retain after backup.
+
+    Returns:
+        CheckResult with capacity assessment.
+    """
+    try:
+        source = Path(source_path)
+        lan_dest = Path(lan_path)
+
+        if not source.exists():
+            return CheckResult(
+                category="Storage",
+                name="LAN Capacity",
+                severity=Severity.FAIL,
+                message=f"Source path not found: {source_path}",
+            )
+
+        if not lan_dest.exists():
+            return CheckResult(
+                category="Storage",
+                name="LAN Capacity",
+                severity=Severity.FAIL,
+                message=f"LAN destination not accessible: {lan_path}",
+            )
+
+        # Get source total size and LAN free space
+        source_usage = shutil.disk_usage(str(source))
+        lan_usage = shutil.disk_usage(str(lan_dest))
+
+        source_total_gb = source_usage.total / (1024 ** 3)
+        source_used_gb = source_usage.used / (1024 ** 3)
+        lan_free_gb = lan_usage.free / (1024 ** 3)
+
+        # Check if LAN has enough space for source data plus minimum free space
+        required_space_gb = source_used_gb + min_free_gb
+        if lan_free_gb < required_space_gb:
+            deficit_gb = required_space_gb - lan_free_gb
+            return CheckResult(
+                category="Storage",
+                name="LAN Capacity",
+                severity=Severity.FAIL,
+                message=(
+                    f"LAN destination insufficient space: {lan_free_gb:.1f}GB free, "
+                    f"need {required_space_gb:.1f}GB ({source_used_gb:.1f}GB source + "
+                    f"{min_free_gb:.1f}GB buffer). Deficit: {deficit_gb:.1f}GB"
+                ),
+                metric=lan_free_gb,
+                threshold=required_space_gb,
+            )
+
+        # Warn if less than 20% free after backup
+        projected_free_gb = lan_free_gb - source_used_gb
+        lan_total_gb = lan_usage.total / (1024 ** 3)
+        projected_free_pct = (projected_free_gb / lan_total_gb) * 100
+
+        if projected_free_pct < 20:
+            return CheckResult(
+                category="Storage",
+                name="LAN Capacity",
+                severity=Severity.WARN,
+                message=(
+                    f"LAN destination will have only {projected_free_pct:.0f}% free "
+                    f"after backup ({projected_free_gb:.1f}GB)"
+                ),
+                metric=projected_free_pct,
+                threshold=20.0,
+            )
+
+        return CheckResult(
+            category="Storage",
+            name="LAN Capacity",
+            severity=Severity.PASS,
+            message=(
+                f"LAN has sufficient space: {lan_free_gb:.1f}GB free, "
+                f"source uses {source_used_gb:.1f}GB, "
+                f"{projected_free_gb:.1f}GB will remain ({projected_free_pct:.0f}%)"
+            ),
+            metric=lan_free_gb,
+            threshold=required_space_gb,
+        )
+
+    except Exception as e:
+        return CheckResult(
+            category="Storage",
+            name="LAN Capacity",
+            severity=Severity.WARN,
+            message=f"Cannot check LAN capacity: {e}",
+        )
+
+
 def check_temp_directory(path: str) -> CheckResult:
     """Check that the temp directory exists and has space."""
     try:
@@ -1251,6 +1350,14 @@ def run_preflight_checks(config: dict) -> PreflightReport:
             check_lan_destination(
                 paths.get("lan_destination", ""),
                 wol.get("server_ip", ""),
+            )
+        )
+        # GAP #4: Check LAN destination has enough capacity for source data
+        report.checks.append(
+            check_lan_destination_capacity(
+                paths.get("source_drive", ""),
+                paths.get("lan_destination", ""),
+                min_free_gb=50.0,
             )
         )
     report.checks.append(check_temp_directory(paths.get("rclone_temp_directory", "")))

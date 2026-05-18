@@ -1,13 +1,13 @@
 """Uninstall the backup agent Windows service.
 
 Usage:
-    uv run deploy/uninstall_service.py [--service-name BackupAgent] [--nssm-path nssm.exe]
+    uv run deploy/uninstall_service.py [--service-name BackupAgent] [--servy-path servy.exe]
 
 Stops and removes the Windows service. Does NOT delete:
 - config.yaml
 - manifest.db
 - log files
-- NSSM binary
+- Servy binary
 """
 
 import subprocess
@@ -19,8 +19,8 @@ import typer
 app = typer.Typer(help="Uninstall backup agent Windows service")
 
 
-def find_nssm(configured_path: str | None = None) -> Path | None:
-    """Find the NSSM executable."""
+def find_servy(configured_path: str | None = None) -> Path | None:
+    """Find the Servy executable."""
     if configured_path:
         p = Path(configured_path)
         if p.exists():
@@ -28,25 +28,25 @@ def find_nssm(configured_path: str | None = None) -> Path | None:
         return None
 
     candidates = [
-        Path("C:\\nssm\\nssm.exe"),
-        Path("C:\\Program Files\\nssm\\nssm.exe"),
-        Path("C:\\Program Files (x86)\\nssm\\nssm.exe"),
+        Path("C:\\servy\\servy.exe"),
+        Path("C:\\Program Files\\servy\\servy.exe"),
+        Path("C:\\Program Files (x86)\\servy\\servy.exe"),
     ]
     for p in candidates:
         if p.exists():
             return p
 
     import shutil
-    nssm_in_path = shutil.which("nssm")
-    if nssm_in_path:
-        return Path(nssm_in_path)
+    servy_in_path = shutil.which("servy")
+    if servy_in_path:
+        return Path(servy_in_path)
 
     return None
 
 
-def stop_service(nssm: Path, service_name: str) -> bool:
+def stop_service(servy: Path, service_name: str) -> bool:
     """Stop the Windows service."""
-    cmd = [str(nssm), "stop", service_name]
+    cmd = [str(servy), "stop", service_name]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
@@ -63,9 +63,9 @@ def stop_service(nssm: Path, service_name: str) -> bool:
         return False
 
 
-def remove_service(nssm: Path, service_name: str) -> bool:
+def remove_service(servy: Path, service_name: str) -> bool:
     """Remove the Windows service."""
-    cmd = [str(nssm), "remove", service_name, "confirm"]
+    cmd = [str(servy), "delete", service_name]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
@@ -82,7 +82,7 @@ def remove_service(nssm: Path, service_name: str) -> bool:
 @app.command()
 def uninstall(
     service_name: str = typer.Option("BackupAgent", "--service-name", help="Service name to uninstall"),
-    nssm_path: str | None = typer.Option(None, "--nssm-path", help="Path to nssm.exe"),
+    servy_path: str | None = typer.Option(None, "--servy-path", help="Path to servy.exe"),
     dry_run: bool = typer.Option(False, "--dry-run", "-d", help="Show what would be done"),
 ):
     """Uninstall backup agent Windows service."""
@@ -90,13 +90,13 @@ def uninstall(
     typer.echo("Backup Agent — Uninstall Service")
     typer.echo("=" * 50)
 
-    nssm = find_nssm(nssm_path)
-    if not nssm:
-        typer.echo("\nERROR: NSSM not found.")
-        typer.echo("Specify path with --nssm-path")
+    servy = find_servy(servy_path)
+    if not servy:
+        typer.echo("\nERROR: Servy not found.")
+        typer.echo("Specify path with --servy-path")
         raise typer.Exit(1)
 
-    typer.echo(f"\nFound NSSM: {nssm}")
+    typer.echo(f"\nFound Servy: {servy}")
 
     if dry_run:
         typer.echo(f"\n  Would stop service: {service_name}")
@@ -112,11 +112,11 @@ def uninstall(
         raise typer.Exit(1)
 
     typer.echo(f"\n[1/2] Stopping service '{service_name}'...")
-    if not stop_service(nssm, service_name):
+    if not stop_service(servy, service_name):
         typer.echo("\n  Warning: Service may not have been running")
 
     typer.echo(f"\n[2/2] Removing service '{service_name}'...")
-    if not remove_service(nssm, service_name):
+    if not remove_service(servy, service_name):
         raise typer.Exit(1)
 
     typer.echo("\nService uninstalled successfully")
@@ -124,7 +124,7 @@ def uninstall(
     typer.echo("  - config.yaml")
     typer.echo("  - manifest.db")
     typer.echo("  - Log files")
-    typer.echo("  - NSSM binary")
+    typer.echo("  - Servy binary")
 
 
 if __name__ == "__main__":

@@ -116,6 +116,52 @@ class VssConfig(BaseModel):
     """If VSS creation fails, fall back to direct backup instead of failing."""
 
 
+class CloudArchiveConfig(BaseModel):
+    """Yearly archive configuration for moving old FY data from active to archive prefix."""
+    enabled: bool = True
+    """Enable yearly archive task."""
+    trigger_date: str = "04-15"
+    """Date to trigger archive (MM-DD format). Runs on first backup after this date each year."""
+    active_path: str = "D_Drive_Backup/active/"
+    """GCS prefix for active (current FY) data."""
+    archive_path: str = "D_Drive_Backup/archive/"
+    """GCS prefix for archived (previous FY) data."""
+    storage_class: str = "ARCHIVE"
+    """Storage class for archived data."""
+
+    @field_validator("trigger_date")
+    @classmethod
+    def valid_trigger_date(cls, v: str) -> str:
+        if not re.match(r"^\d{2}-\d{2}$", v):
+            raise ValueError("cloud_archive.trigger_date must be MM-DD format (e.g., 04-15)")
+        month, day = map(int, v.split("-"))
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            raise ValueError("cloud_archive.trigger_date has invalid month or day")
+        return v
+
+    @field_validator("active_path")
+    @classmethod
+    def active_path_ends_with_slash(cls, v: str) -> str:
+        if not v.endswith("/"):
+            return v + "/"
+        return v
+
+    @field_validator("archive_path")
+    @classmethod
+    def archive_path_ends_with_slash(cls, v: str) -> str:
+        if not v.endswith("/"):
+            return v + "/"
+        return v
+
+    @field_validator("storage_class")
+    @classmethod
+    def valid_storage_class(cls, v: str) -> str:
+        valid = {"STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE"}
+        if v.upper() not in valid:
+            raise ValueError(f"cloud_archive.storage_class must be one of: {', '.join(sorted(valid))}")
+        return v.upper()
+
+
 class CloudBackupConfig(BaseModel):
     enabled: bool = True
     provider: str = "gcs"
@@ -126,6 +172,8 @@ class CloudBackupConfig(BaseModel):
     chunk_size: str = "100M"
     retry_count: int = Field(default=3, ge=1, le=10)
     subprocess_timeout_seconds: int = Field(default=21600, ge=3600)
+    storage_class: str = "COLDLINE"
+    """Storage class for new uploads to GCS."""
 
     @field_validator("provider")
     @classmethod
@@ -165,6 +213,14 @@ class CloudBackupConfig(BaseModel):
         if not re.match(r"^\d+[MG]$", v):
             raise ValueError("cloud_backup.chunk_size must match format like 100M, 5G")
         return v
+
+    @field_validator("storage_class")
+    @classmethod
+    def valid_storage_class(cls, v: str) -> str:
+        valid = {"STANDARD", "NEARLINE", "COLDLINE", "ARCHIVE"}
+        if v.upper() not in valid:
+            raise ValueError(f"cloud_backup.storage_class must be one of: {', '.join(sorted(valid))}")
+        return v.upper()
 
 
 class CloudCredentialsConfig(BaseModel):
@@ -206,6 +262,8 @@ class AlertsConfig(BaseModel):
     """Alert when LAN destination free space drops below this threshold (GB)."""
     backup_duration_warning_minutes: int = Field(default=180, ge=30)
     """Alert when backup run duration exceeds this threshold (minutes)."""
+    backup_not_run_warning_days: int = Field(default=2, ge=1, le=30)
+    """Alert when no backup run has been detected for this many days (GAP #3)."""
 
 
 class TestRestoreConfig(BaseModel):
@@ -227,6 +285,7 @@ class AppConfig(BaseModel):
     wol: WolConfig = Field(default_factory=WolConfig)
     vss: VssConfig = Field(default_factory=VssConfig)
     cloud_backup: CloudBackupConfig = Field(default_factory=CloudBackupConfig)
+    cloud_archive: CloudArchiveConfig = Field(default_factory=CloudArchiveConfig)
     cloud_credentials: CloudCredentialsConfig = Field(default_factory=CloudCredentialsConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)

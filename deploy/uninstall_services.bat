@@ -36,39 +36,40 @@ shift
 goto parse_args
 :args_done
 
-set NSSM_EXE=nssm
+set SERVY_EXE=servy
 
 echo ================================================
-echo Backup Agent — Uninstall Windows Services
+echo Backup Agent — Uninstall Windows Services (Servy)
 echo ================================================
 echo.
 
-REM --- Verify NSSM ---
-where %NSSM_EXE% >nul 2>&1
+REM --- Verify Servy ---
+where %SERVY_EXE% >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: NSSM not found in PATH.
-    echo Cannot uninstall services without NSSM.
+    echo ERROR: Servy not found in PATH.
+    echo Cannot uninstall services without Servy.
+    echo Download from https://github.com/aliostad/Servy/releases
     pause
     exit /b 1
 )
 
 echo [1/4] Stopping services...
 
-net stop BackupUI >nul 2>&1
+%SERVY_EXE% stop BackupUI >nul 2>&1
 if errorlevel 1 (
     echo   BackupUI was not running
 ) else (
     echo   BackupUI stopped
 )
 
-net stop PrefectWorker >nul 2>&1
+%SERVY_EXE% stop PrefectWorker >nul 2>&1
 if errorlevel 1 (
     echo   PrefectWorker was not running
 ) else (
     echo   PrefectWorker stopped
 )
 
-net stop PrefectServer >nul 2>&1
+%SERVY_EXE% stop PrefectServer >nul 2>&1
 if errorlevel 1 (
     echo   PrefectServer was not running
 ) else (
@@ -78,21 +79,21 @@ if errorlevel 1 (
 echo.
 echo [2/4] Removing services...
 
-%NSSM_EXE% remove PrefectServer confirm >nul 2>&1
+%SERVY_EXE% delete PrefectServer >nul 2>&1
 if errorlevel 1 (
     echo   PrefectServer not found
 ) else (
     echo   PrefectServer removed
 )
 
-%NSSM_EXE% remove PrefectWorker confirm >nul 2>&1
+%SERVY_EXE% delete PrefectWorker >nul 2>&1
 if errorlevel 1 (
     echo   PrefectWorker not found
 ) else (
     echo   PrefectWorker removed
 )
 
-%NSSM_EXE% remove BackupUI confirm >nul 2>&1
+%SERVY_EXE% delete BackupUI >nul 2>&1
 if errorlevel 1 (
     echo   BackupUI not found
 ) else (

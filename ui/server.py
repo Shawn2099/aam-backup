@@ -32,7 +32,7 @@ def _load_prefect_api_url() -> str:
 
 @app.get("/health")
 async def health():
-    """Health check endpoint for NSSM monitoring and external tools."""
+    """Health check endpoint for Servy monitoring and external tools."""
     prefect_api_url = _load_prefect_api_url()
     prefect_healthy = False
 
