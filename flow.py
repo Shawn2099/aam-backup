@@ -30,6 +30,43 @@ from tasks.verification_task import verify_cloud_integrity_task
 from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
 
 
+class ConcurrencyGuard:
+    """File-based lock to prevent concurrent backup runs.
+
+    BUG FIX #1: Prevents two backups from running simultaneously,
+    which would corrupt manifest.db via concurrent writes.
+    """
+
+    def __init__(self, lock_path: str | Path):
+        self._lock_file = Path(lock_path)
+        self._acquired = False
+
+    def acquire(self) -> bool:
+        """Try to acquire the lock. Returns True if successful."""
+        if self._lock_file.exists():
+            try:
+                # Check if the process that created the lock is still running
+                pid = int(self._lock_file.read_text().strip())
+                # On Windows, this will fail if the process is gone
+                os.kill(pid, 0)
+                return False  # Process still running — another backup is active
+            except (ValueError, ProcessLookupError, PermissionError):
+                # Stale lock — remove it
+                self._lock_file.unlink(missing_ok=True)
+
+        # Create lock file with current PID
+        self._lock_file.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_file.write_text(str(os.getpid()))
+        self._acquired = True
+        return True
+
+    def release(self):
+        """Release the lock."""
+        if self._acquired:
+            self._lock_file.unlink(missing_ok=True)
+            self._acquired = False
+
+
 def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
     """Send failure notification email using SMTP config from config.yaml."""
     try:
@@ -178,10 +215,10 @@ def _on_backup_completion(flow_obj, flow_run, state):
 
 @flow(
     name="nightly-backup",
-    flow_run_name="backup-{config_path}",
+    flow_run_name="backup-{config_path}-{date:%Y%m%d-%H%M%S}",
     task_runner=ThreadPoolTaskRunner(max_workers=2),
     log_prints=True,
-    version="1.1.0",
+    version="1.2.0",
     timeout_seconds=28800,  # 8 hours max
     retries=1,
     retry_delay_seconds=300,  # 5 minutes
@@ -213,11 +250,18 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
     log_dir = Path(os.environ.get("BACKUP_LOG_DIR", "logs"))
     configure_logging(log_dir)
 
-    # Track VSS state for cleanup (must survive exceptions)
-    vss_enabled = False
-    vss_device_path = None
+    # BUG FIX #1: Concurrency guard — prevent simultaneous backup runs
+    lock_path = log_dir / "backup.lock"
+    guard = ConcurrencyGuard(lock_path)
+    if not guard.acquire():
+        logger.error("Another backup is already running — aborting this run")
+        raise RuntimeError("Backup already in progress — concurrency guard prevented duplicate run")
 
     try:
+        # Track VSS state for cleanup (must survive exceptions)
+        vss_enabled = False
+        vss_device_path = None
+
         # Task 1: Load configuration
         config, gcs_key_path = load_config_task(config_path)
 
@@ -226,6 +270,17 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
             version_config_task(config_path, config.paths.log_directory)
         except Exception as e:
             logger.warning(f"Config versioning failed (non-critical): {e}")
+
+        # BUG FIX #5: Pre-backup manifest backup — protects against corruption during this run
+        try:
+            db = ManifestDB(config.paths.database_path)
+            try:
+                db.maintenance(max_size_mb=500)
+            finally:
+                db.close()
+            logger.info("Manifest DB maintenance completed before backup")
+        except Exception as e:
+            logger.warning(f"Pre-backup manifest maintenance failed (non-critical): {e}")
 
         # Task 1c: Create VSS snapshot if enabled
         if config.vss.enabled:
@@ -300,6 +355,33 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                         )
                 finally:
                     db.close()
+
+            # BUG FIX #3: Collect metrics even on "no change" runs
+            try:
+                duration = time.time() - start_time
+                from prefect.context import get_run_context
+                ctx = get_run_context()
+                flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
+
+                collect_metrics_task(
+                    log_directory=config.paths.log_directory,
+                    flow_run_id=flow_run_id,
+                    overall_status="COMPLETE",
+                    lan_status="LAN_SKIPPED",
+                    cloud_status="CLOUD_SKIPPED",
+                    scan_new=0,
+                    scan_modified=0,
+                    scan_deleted=0,
+                    scan_unchanged=scan_result.unchanged_count,
+                    lan_files_copied=0,
+                    lan_bytes_copied=0,
+                    lan_files_failed=0,
+                    cloud_mismatches=0,
+                    cloud_missing=0,
+                    duration_seconds=round(duration, 1),
+                )
+            except Exception as e:
+                logger.warning(f"Metrics collection failed (non-critical): {e}")
 
             return "COMPLETE"
 
@@ -430,6 +512,9 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 logger.info("VSS shadow copy deleted")
             except Exception as e:
                 logger.warning(f"VSS cleanup failed: {e}")
+
+        # BUG FIX #1: Release concurrency guard
+        guard.release()
 
 
 if __name__ == "__main__":

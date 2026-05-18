@@ -94,6 +94,9 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
     4. Classify as new, modified, or unchanged.
     5. After walk: detect deleted files (in manifest but not on disk).
 
+    BUG FIX #2: Handles VSS device paths (\\?\GLOBALROOT\...) by computing
+    relative paths manually instead of relying on Path.relative_to().
+
     Args:
         config: Validated application configuration.
         db: ManifestDB instance for lookups and updates.
@@ -111,6 +114,12 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
 
     # Bulk load all manifest entries into memory — avoids 200K+ individual queries
     manifest_cache = db.get_all_entries()
+
+    # BUG FIX #2: For VSS paths, store the original drive letter for relative path computation
+    # VSS paths look like: \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy123\
+    # We need to compute relative paths against the original drive (e.g., D:\)
+    source_str = str(source)
+    is_vss_path = source_str.startswith("\\\\?\\") or source_str.startswith("\\\\")
 
     for dirpath, dirnames, filenames in os.walk(source, topdown=True):
         current_dir = Path(dirpath)
@@ -140,7 +149,19 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                 continue
 
             # Step 4: Compute relative path
-            relative_path = str(full_path.relative_to(source))
+            # BUG FIX #2: Handle VSS device paths where Path.relative_to() fails
+            full_path_str = str(full_path)
+            if is_vss_path:
+                # For VSS paths, strip the source prefix manually
+                source_prefix = source_str.rstrip("\\").rstrip("/")
+                if full_path_str.lower().startswith(source_prefix.lower()):
+                    relative_path = full_path_str[len(source_prefix):].lstrip("\\").lstrip("/")
+                    # Normalize separators
+                    relative_path = relative_path.replace("/", "\\")
+                else:
+                    continue  # Skip files outside source
+            else:
+                relative_path = str(full_path.relative_to(source))
 
             # Step 5: Add to current paths
             current_paths.add(relative_path)
