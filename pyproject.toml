@@ -20,6 +20,12 @@ dependencies = [
     "xxhash>=3.7.0",
 ]
 
+[project.optional-dependencies]
+preflight = [
+    "psutil>=6.0.0",
+    "ntplib>=0.4.0",
+]
+
 [dependency-groups]
 dev = [
     "freezegun>=1.5.5",
