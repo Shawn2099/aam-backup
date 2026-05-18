@@ -1,10 +1,47 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
-build/
+*.py[cod]
+*.egg-info/
 dist/
-wheels/
-*.egg-info
+build/
+.eggs/
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup system runtime
+*.db
+*.db-shm
+*.db-wal
+logs/
+rclone_temp/
+backup.lock
+run_counter.txt
+
+# Environment
+.env
+
+# OS-specific
+*.log
+*.tmp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Planning (internal dev artifacts)
+.planning/

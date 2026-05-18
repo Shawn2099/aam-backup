@@ -231,4 +231,11 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
         result.deleted_files.append(deleted_path)
         db.delete_entry(deleted_path)
 
+    # Compute totals for capacity tracking
+    result.total_file_count = len(current_paths)
+    result.total_source_bytes = sum(
+        entry.file_size for entry in manifest_cache.values()
+        if entry.relative_path in current_paths
+    )
+
     return result

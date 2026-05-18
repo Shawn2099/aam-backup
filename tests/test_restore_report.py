@@ -11,7 +11,7 @@ from tasks.report_task import generate_report_task
 
 def test_generate_report_weekly(tmp_path):
     """Generate weekly report from metrics data."""
-    metrics_file = tmp_path / "metrics.jsonl"
+    metrics_file = tmp_path / "backup_metrics.jsonl"
     now = "2026-05-18T00:00:00+00:00"
     entries = [
         {
@@ -64,7 +64,7 @@ def test_generate_report_weekly(tmp_path):
 
 def test_generate_report_monthly_with_failures(tmp_path):
     """Generate monthly report with mixed results."""
-    metrics_file = tmp_path / "metrics.jsonl"
+    metrics_file = tmp_path / "backup_metrics.jsonl"
     entries = [
         {"timestamp": "2026-05-18T00:00:00+00:00", "flow_run_id": "run-1", "overall_status": "COMPLETE", "lan_status": "LAN_COMPLETE", "cloud_status": "CLOUD_COMPLETE", "scan_new": 10, "scan_modified": 5, "scan_deleted": 0, "lan_files_copied": 100, "lan_bytes_copied": 1024, "lan_files_failed": 0, "cloud_mismatches": 0, "cloud_missing": 0, "duration_seconds": 3600},
         {"timestamp": "2026-05-17T00:00:00+00:00", "flow_run_id": "run-2", "overall_status": "FAILED", "lan_status": "LAN_FAILED", "cloud_status": "CLOUD_FAILED", "scan_new": 0, "scan_modified": 0, "scan_deleted": 0, "lan_files_copied": 0, "lan_bytes_copied": 0, "lan_files_failed": 0, "cloud_mismatches": 0, "cloud_missing": 0, "duration_seconds": 60},
@@ -94,7 +94,7 @@ def test_generate_report_no_metrics(tmp_path):
 
 def test_generate_report_no_recent_runs(tmp_path):
     """Generate report skips when no runs in period."""
-    metrics_file = tmp_path / "metrics.jsonl"
+    metrics_file = tmp_path / "backup_metrics.jsonl"
     # Old entry (outside weekly window)
     with open(metrics_file, "w") as f:
         f.write(json.dumps({

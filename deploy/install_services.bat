@@ -37,9 +37,11 @@ goto parse_args
 
 REM --- Configuration ---
 set BACKUP_DIR=C:\BackupAgent
-set PYTHON_DIR=C:\Python311
+set PYTHON_DIR=C:\Python312
 set PYTHON_EXE=%PYTHON_DIR%\python.exe
+set PIP_EXE=%PYTHON_DIR%\Scripts\pip.exe
 set PREFECT_EXE=%PYTHON_DIR%\Scripts\prefect.exe
+set UV_EXE=%PYTHON_DIR%\Scripts\uv.exe
 set NSSM_EXE=nssm
 set LOG_DIR=%BACKUP_DIR%\logs
 set PREFECT_API_URL=http://127.0.0.1:4200/api
@@ -143,12 +145,24 @@ echo BackupUI installed
 echo.
 
 REM --- Start services ---
-echo [6/6] Starting services...
+echo [6/7] Starting services...
 net start PrefectServer
 timeout /t 5 /nobreak >nul
 net start PrefectWorker
 timeout /t 3 /nobreak >nul
 net start BackupUI
+echo.
+
+REM --- Create work pool ---
+echo [7/7] Creating Prefect work pool...
+timeout /t 3 /nobreak >nul
+"%PREFECT_EXE%" work-pool create default --type process 2>nul
+if errorlevel 1 (
+    echo Work pool may already exist or server not ready yet.
+    echo Run manually: prefect work-pool create default --type process
+) else (
+    echo Work pool 'default' created
+)
 echo.
 
 echo ================================================
@@ -161,8 +175,8 @@ echo   PrefectWorker  — executes backup flows
 echo   BackupUI       — http://localhost:8080
 echo.
 echo Next steps:
-echo   1. Create work pool: prefect work-pool create default --type process
-echo   2. Create deployment: uv run deploy/create_deployment.py create
-echo   3. Configure email notifications in Prefect UI
+echo   1. Create deployment: uv run deploy/create_deployment.py create
+echo   2. Configure email notifications in Prefect UI
+echo   3. Verify status UI at http://localhost:8080
 echo.
 pause

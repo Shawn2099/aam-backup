@@ -6,6 +6,7 @@ from prefect.tasks import exponential_backoff
 
 from core.manifest_db import ManifestDB
 from core.robocopy import run_robocopy
+from core.verify import verify_lan_checksums
 from core.wol import ensure_server_online, WolTimeout
 from models.config_model import AppConfig
 from models.scan_result import ScanResult
@@ -20,7 +21,7 @@ from models.scan_result import ScanResult
     timeout_seconds=14400,  # 4 hours max
 )
 def lan_backup_task(config: AppConfig, scan_result: ScanResult, database_path: str) -> dict:
-    """Execute LAN backup: WoL → Robocopy → manifest update.
+    """Execute LAN backup: WoL → Robocopy → manifest update → checksum verification.
 
     Args:
         config: Validated application configuration.
@@ -56,12 +57,34 @@ def lan_backup_task(config: AppConfig, scan_result: ScanResult, database_path: s
             f"{result.bytes_copied} bytes copied"
         )
 
+        # Verify checksums on a sample of copied files
+        lan_checksum = {"verified": 0, "mismatches": 0, "errors": 0}
+        if result.status in ("LAN_COMPLETE", "LAN_PARTIAL") and scan_result.has_changes:
+            logger.info("Running LAN checksum verification on sampled files...")
+            lan_checksum = verify_lan_checksums(
+                config.paths.source_drive,
+                config.paths.lan_destination,
+                scan_result,
+                sample_count=5,
+            )
+            if lan_checksum["mismatches"] > 0:
+                logger.warning(
+                    f"LAN checksum verification found {lan_checksum['mismatches']} mismatches "
+                    f"out of {lan_checksum['verified'] + lan_checksum['mismatches']} verified"
+                )
+            else:
+                logger.info(
+                    f"LAN checksum verification passed: "
+                    f"{lan_checksum['verified']} files verified"
+                )
+
         return {
             "status": result.status,
             "exit_code": result.exit_code,
             "files_copied": result.files_copied,
             "bytes_copied": result.bytes_copied,
             "files_failed": result.files_failed,
+            "lan_checksum": lan_checksum,
         }
     finally:
         db.close()

@@ -202,6 +202,18 @@ class NotificationsConfig(BaseModel):
 class AlertsConfig(BaseModel):
     no_changes_warning_days: int = Field(default=7, ge=1, le=365)
     """If no file changes detected for this many days, log a warning."""
+    lan_free_space_warning_gb: int = Field(default=50, ge=1)
+    """Alert when LAN destination free space drops below this threshold (GB)."""
+    backup_duration_warning_minutes: int = Field(default=180, ge=30)
+    """Alert when backup run duration exceeds this threshold (minutes)."""
+
+
+class TestRestoreConfig(BaseModel):
+    enabled: bool = True
+    sample_count: int = Field(default=10, ge=1, le=100)
+    """Number of random files to verify per run."""
+    run_every_n_backups: int = Field(default=7, ge=1)
+    """Run test restore verification every N backup runs."""
 
 
 class AppConfig(BaseModel):
@@ -219,3 +231,4 @@ class AppConfig(BaseModel):
     ui: UIConfig = Field(default_factory=UIConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    test_restore: TestRestoreConfig = Field(default_factory=TestRestoreConfig)

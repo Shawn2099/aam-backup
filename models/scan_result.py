@@ -22,6 +22,8 @@ class ScanResult:
     deleted_files: list[str] = field(default_factory=list)
     unchanged_count: int = 0
     cannot_read: list[str] = field(default_factory=list)
+    total_source_bytes: int = 0
+    total_file_count: int = 0
 
     @property
     def has_changes(self) -> bool:

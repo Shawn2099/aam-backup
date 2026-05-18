@@ -1154,6 +1154,78 @@ def check_binaries() -> list[CheckResult]:
     return results
 
 
+def check_dry_run_lan(source_drive: str, lan_destination: str) -> CheckResult:
+    """Run robocopy /L (list-only) to preview what would change on LAN."""
+    from core.verify import run_dry_run_lan
+
+    result = run_dry_run_lan(source_drive, lan_destination)
+
+    if result.get("skipped"):
+        return CheckResult(
+            category="Dry Run",
+            name="LAN Preview",
+            severity=Severity.SKIP,
+            message=f"Skipped ({result.get('reason', 'unknown')})",
+        )
+
+    if "error" in result:
+        return CheckResult(
+            category="Dry Run",
+            name="LAN Preview",
+            severity=Severity.WARN,
+            message=f"Preview failed: {result['error']}",
+        )
+
+    total = result["total"]
+    message = (
+        f"{total} files would change: "
+        f"{result['new']} new, {result['modified']} modified, {result['deleted']} deleted"
+    )
+
+    return CheckResult(
+        category="Dry Run",
+        name="LAN Preview",
+        severity=Severity.PASS,
+        message=message,
+        metric=total,
+    )
+
+
+def check_dry_run_cloud(
+    source_drive: str,
+    bucket: str,
+    remote_path: str,
+    gcs_key_path: str,
+    gcs_location: str,
+) -> CheckResult:
+    """Run rclone sync --dry-run to preview what would change on GCS."""
+    from core.verify import run_dry_run_cloud
+
+    result = run_dry_run_cloud(source_drive, bucket, remote_path, gcs_key_path, gcs_location)
+
+    if "error" in result:
+        return CheckResult(
+            category="Dry Run",
+            name="Cloud Preview",
+            severity=Severity.WARN,
+            message=f"Preview failed: {result['error']}",
+        )
+
+    total = result["total"]
+    message = (
+        f"{total} files would change: "
+        f"{result['transfers']} transfers, {result['deletes']} deletes"
+    )
+
+    return CheckResult(
+        category="Dry Run",
+        name="Cloud Preview",
+        severity=Severity.PASS,
+        message=message,
+        metric=total,
+    )
+
+
 # ─── Main Runner ────────────────────────────────────────────────────────
 
 def run_preflight_checks(config: dict) -> PreflightReport:
@@ -1230,6 +1302,29 @@ def run_preflight_checks(config: dict) -> PreflightReport:
     # Database
     report.checks.append(check_database(paths.get("database_path", "")))
     report.checks.append(check_log_directory(paths.get("log_directory", "")))
+
+    # Dry Run Previews
+    if config.get("lan_backup", {}).get("enabled", False):
+        report.checks.append(check_dry_run_lan(
+            paths.get("source_drive", ""),
+            paths.get("lan_destination", ""),
+        ))
+    if cloud.get("enabled", False):
+        gcs_key_path = None
+        try:
+            import keyring
+            cred_name = config.get("cloud_credentials", {}).get("credential_name", "BackupAgent_GCS")
+            gcs_key_path = keyring.get_password("BackupAgent", cred_name)
+        except Exception:
+            pass
+        if gcs_key_path:
+            report.checks.append(check_dry_run_cloud(
+                paths.get("source_drive", ""),
+                cloud.get("bucket", ""),
+                cloud.get("remote_path", ""),
+                gcs_key_path,
+                cloud.get("gcs_location", "asia-south1"),
+            ))
 
     # Finalize report
     report.completed_at = datetime.now(timezone.utc)

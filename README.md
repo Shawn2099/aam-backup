@@ -32,15 +32,19 @@ Both destinations mirror source exactly. Deletions propagate. GCS retains 1 olde
 - **Prefect 3.x orchestration** — Flow with concurrent LAN + cloud tasks, exponential backoff retries, timeouts, failure hooks
 - **SQLite manifest database** — Thread-safe, WAL mode, tracks file checksums (xxHash64), backup status
 - **Wake-on-LAN** — Automatic server wake before backup
-- **Comprehensive pre-flight checks** — 20+ checks across 8 categories (system, storage, network, credentials, services, cloud, config, database)
+- **Comprehensive pre-flight checks** — 20+ checks across 9 categories (system, storage, network, credentials, services, cloud, config, database, dry-run preview)
+- **Dry-run preview** — `robocopy /L` and `rclone --dry-run` before each backup to preview changes
 - **VSS shadow copies** — Volume Shadow Copy support for locked Tally/Winman files
-- **Post-backup integrity** — `rclone check` verification after cloud backup
-- **Status UI** — FastAPI + Alpine.js + Tailwind, last run status, manual trigger button, `/health` endpoint
+- **Post-backup integrity** — `rclone check` verification after cloud backup, xxHash64 checksum verification on LAN
+- **Automated test restore** — Periodic random file verification from both LAN and GCS
+- **Status UI** — FastAPI + Alpine.js + Tailwind, last run status, manual trigger, `/health`, `/metrics` endpoints
 - **Deployment scripts** — Config validation, credential setup, GCS seeding, NSSM Windows service
-- **Metrics collection** — JSONL per-run metrics for trend analysis
-- **Config versioning** — Automatic backup of config.yaml before each run
+- **Metrics collection** — JSONL per-run metrics for trend analysis (throughput, capacity, file counts)
+- **Config versioning** — Automatic backup of config.yaml before each run + copy to LAN/GCS
 - **Log backup** — Syncs log files to cloud for disaster recovery
-- **Alerting** — Email on failure, weekly summary, no-changes warning
+- **Alerting** — Email on failure, weekly/monthly reports, no-changes warning, LAN space warning, duration warning
+- **Capacity tracking** — LAN free space monitoring, total source size/file count per run
+- **Restore CLI** — List, restore, and verify backups from LAN or GCS
 
 ## Quick Start
 
@@ -55,7 +59,7 @@ uv run scripts/validate_config.py validate
 prefect server start
 
 # 4. Create work pool and start worker
-prefect work-pool create --type process default
+prefect work-pool create default --type process
 PREFECT_API_URL=http://127.0.0.1:4200/api prefect worker start --pool default
 
 # 5. Deploy the flow
@@ -68,13 +72,13 @@ uv run uvicorn ui.server:app --host 0.0.0.0 --port 8080
 ## Project Structure
 
 ```
-core/        — Business logic (config, manifest, scanner, WoL, robocopy, rclone, preflight)
+core/        — Business logic (config, manifest, scanner, WoL, robocopy, rclone, preflight, verify)
 models/      — Pydantic config models, SQLAlchemy manifest model, ScanResult dataclass
-tasks/       — Prefect task wrappers (config, scan, lan, cloud, preflight)
+tasks/       — Prefect task wrappers (config, scan, lan, cloud, preflight, report, metrics, test_restore)
 ui/          — FastAPI server + status page template
-scripts/     — CLI tools (validate, credentials, connections, seed)
+scripts/     — CLI tools (validate, credentials, connections, seed, restore)
 deploy/      — Deployment scripts (create deployment, NSSM install/uninstall)
-tests/       — Pytest suite (161 tests)
+tests/       — Pytest suite (210 tests)
 flow.py      — Prefect flow definition (entry point)
 config.yaml  — Configuration template
 ```
@@ -104,16 +108,29 @@ For enhanced pre-flight checks:
 uv sync --extra preflight
 ```
 
-## Deployment Checklist
+## Deployment
 
-1. [ ] Fill in `config.yaml` (IPs, MAC address, GCS bucket, SMTP settings)
-2. [ ] Store GCS service account key in Windows Credential Manager
-3. [ ] Store SMTP password in Windows Credential Manager
-4. [ ] Install Rclone and add to PATH
-5. [ ] Run `uv sync --extra preflight`
-6. [ ] Run `uv run scripts/validate_config.py validate`
-7. [ ] Run `uv run scripts/test_connections.py test`
-8. [ ] Run `uv run scripts/setup_credentials.py setup`
-9. [ ] Run `uv run deploy/create_deployment.py create`
-10. [ ] Run `deploy/install_services.bat` (as Administrator)
+See [DEPLOYMENT.md](DEPLOYMENT.md) for complete step-by-step deployment guide on Windows Server 2016.
+
+### Quick Deploy Checklist
+
+1. [ ] Install Python 3.12+, uv, rclone, NSSM
+2. [ ] Create GCS bucket + service account
+3. [ ] Copy project files to `C:\BackupAgent\`
+4. [ ] Fill in `config.yaml` (IPs, MAC, bucket, SMTP)
+5. [ ] Store credentials in Windows Credential Manager
+6. [ ] Run `uv sync --extra preflight`
+7. [ ] Run `uv run scripts/validate_config.py validate`
+8. [ ] Run `uv run scripts/test_connections.py test`
+9. [ ] Run `deploy/install_services.bat` (as Administrator)
+10. [ ] Run `uv run deploy/create_deployment.py create`
 11. [ ] Verify status UI at `http://<server>:8080`
+12. [ ] Run post-deployment verification (see DEPLOYMENT.md)
+
+## Disaster Recovery
+
+See [DR_RUNBOOK.md](DR_RUNBOOK.md) for recovery procedures including:
+- Single file restore (LAN, GCS, CLI)
+- Full server recovery (RTO: 8-12 hours)
+- manifest.db corruption recovery
+- Ransomware recovery

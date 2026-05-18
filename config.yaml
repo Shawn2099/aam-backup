@@ -132,3 +132,13 @@ notifications:
 # ═══════════════════════════════════════════════════
 alerts:
   no_changes_warning_days: 7
+  lan_free_space_warning_gb: 50
+  backup_duration_warning_minutes: 180
+
+# ═══════════════════════════════════════════════════
+# TEST RESTORE — Periodic random file verification
+# ═══════════════════════════════════════════════════
+test_restore:
+  enabled: true
+  sample_count: 10
+  run_every_n_backups: 7

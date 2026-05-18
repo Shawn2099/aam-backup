@@ -1,6 +1,7 @@
 """FastAPI status page server."""
 
 import httpx
+import json
 import yaml
 from pathlib import Path
 
@@ -133,3 +134,62 @@ async def trigger_backup():
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@app.get("/metrics")
+async def get_metrics():
+    """Return latest backup metrics including capacity info."""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    log_dir = None
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+            log_dir = config.get("paths", {}).get("log_directory")
+        except Exception:
+            pass
+
+    if not log_dir:
+        return {"status": "error", "message": "Could not determine log directory"}
+
+    metrics_file = Path(log_dir) / "backup_metrics.jsonl"
+    if not metrics_file.exists():
+        return {"status": "no_data"}
+
+    # Read last line for latest metrics
+    try:
+        with open(metrics_file) as f:
+            lines = f.readlines()
+            if not lines:
+                return {"status": "no_data"}
+            latest = json.loads(lines[-1])
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    capacity = latest.get("capacity", {})
+    lan_free_gb = capacity.get("lan_free_bytes", 0) / (1024 ** 3) if capacity.get("lan_free_bytes") else 0
+    total_source_gb = capacity.get("total_source_bytes", 0) / (1024 ** 3) if capacity.get("total_source_bytes") else 0
+
+    lan_data = latest.get("lan", {})
+    cloud_data = latest.get("cloud", {})
+
+    return {
+        "status": "ok",
+        "timestamp": latest.get("timestamp"),
+        "overall_status": latest.get("overall_status"),
+        "duration_seconds": latest.get("duration_seconds"),
+        "capacity": {
+            "lan_free_gb": round(lan_free_gb, 1),
+            "total_source_gb": round(total_source_gb, 1),
+            "total_file_count": capacity.get("total_file_count", 0),
+        },
+        "scan": latest.get("scan", {}),
+        "lan": {
+            "files_copied": lan_data.get("files_copied", 0),
+            "bytes_copied": lan_data.get("bytes_copied", 0),
+            "files_failed": lan_data.get("files_failed", 0),
+            "checksum_verified": lan_data.get("checksum_verified", 0),
+            "checksum_mismatches": lan_data.get("checksum_mismatches", 0),
+        },
+        "cloud": cloud_data,
+    }

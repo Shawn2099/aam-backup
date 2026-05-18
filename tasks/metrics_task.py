@@ -30,6 +30,11 @@ def collect_metrics_task(
     cloud_mismatches: int = 0,
     cloud_missing: int = 0,
     duration_seconds: float = 0,
+    total_source_bytes: int = 0,
+    total_file_count: int = 0,
+    lan_destination: str = "",
+    lan_checksum_verified: int = 0,
+    lan_checksum_mismatches: int = 0,
 ) -> dict:
     """Append backup run metrics to a JSONL file for trend analysis.
 
@@ -79,6 +84,8 @@ def collect_metrics_task(
             "files_copied": lan_files_copied,
             "bytes_copied": lan_bytes_copied,
             "files_failed": lan_files_failed,
+            "checksum_verified": lan_checksum_verified,
+            "checksum_mismatches": lan_checksum_mismatches,
         },
         "cloud": {
             "mismatches": cloud_mismatches,
@@ -86,6 +93,11 @@ def collect_metrics_task(
         },
         "duration_seconds": duration_seconds,
         "throughput_mbps": round(lan_bytes_copied / (1024 * 1024) / max(duration_seconds, 1), 2),
+        "capacity": {
+            "total_source_bytes": total_source_bytes,
+            "total_file_count": total_file_count,
+            "lan_free_bytes": _get_disk_free_bytes(lan_destination),
+        },
     }
 
     try:
@@ -96,3 +108,19 @@ def collect_metrics_task(
         logger.warning(f"Failed to write metrics (non-critical): {e}")
 
     return metrics
+
+
+def _get_disk_free_bytes(path: str) -> int:
+    """Get free disk space in bytes for a given path.
+
+    Returns 0 if path is empty or inaccessible.
+    Cross-platform: uses shutil.disk_usage on Linux, works with UNC on Windows.
+    """
+    if not path:
+        return 0
+    try:
+        import shutil
+        usage = shutil.disk_usage(path)
+        return usage.free
+    except Exception:
+        return 0

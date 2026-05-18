@@ -25,7 +25,9 @@ from tasks.maintenance_task import maintain_manifest_db_task
 from tasks.manifest_backup_task import backup_manifest_db_task
 from tasks.metrics_task import collect_metrics_task
 from tasks.preflight_task import preflight_task
+from tasks.report_task import generate_report_task
 from tasks.scan_task import scan_task
+from tasks.test_restore_task import test_restore_task
 from tasks.verification_task import verify_cloud_integrity_task
 from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
 
@@ -181,6 +183,24 @@ def _send_success_email(config_path: str, flow_run_id: str, status: str, duratio
             logger.error(f"Failed to send success email: {e}")
         except Exception:
             pass
+
+
+def _get_and_increment_run_counter(log_directory: str) -> int:
+    """Get and increment a persistent run counter from a file.
+
+    Returns the current run number (1-based).
+    File is created if it doesn't exist.
+    """
+    counter_file = Path(log_directory) / "run_counter.txt"
+    counter_file.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        current = int(counter_file.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        current = 0
+
+    counter_file.write_text(str(current + 1))
+    return current + 1
 
 
 def _on_backup_failure(flow_obj, flow_run, state):
@@ -379,6 +399,9 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                     cloud_mismatches=0,
                     cloud_missing=0,
                     duration_seconds=round(duration, 1),
+                    total_source_bytes=scan_result.total_source_bytes,
+                    total_file_count=scan_result.total_file_count,
+                    lan_destination=config.paths.lan_destination,
                 )
             except Exception as e:
                 logger.warning(f"Metrics collection failed (non-critical): {e}")
@@ -492,6 +515,11 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 cloud_mismatches=cloud_mismatches,
                 cloud_missing=cloud_missing,
                 duration_seconds=round(duration, 1),
+                total_source_bytes=scan_result.total_source_bytes,
+                total_file_count=scan_result.total_file_count,
+                lan_destination=config.paths.lan_destination,
+                lan_checksum_verified=lan_result.get("lan_checksum", {}).get("verified", 0),
+                lan_checksum_mismatches=lan_result.get("lan_checksum", {}).get("mismatches", 0),
             )
         except Exception as e:
             logger.warning(f"Metrics collection failed (non-critical): {e}")
@@ -501,6 +529,114 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
             maintain_manifest_db_task(config.paths.database_path, max_size_mb=500)
         except Exception as e:
             logger.warning(f"Manifest DB maintenance failed (non-critical): {e}")
+
+        # Check LAN destination free space and warn if approaching capacity
+        try:
+            import shutil
+            lan_free = shutil.disk_usage(config.paths.lan_destination).free
+            lan_free_gb = lan_free / (1024 ** 3)
+            threshold_gb = config.alerts.lan_free_space_warning_gb
+            if lan_free_gb < threshold_gb:
+                logger.warning(
+                    f"LAN destination low on space: {lan_free_gb:.1f} GB free "
+                    f"(threshold: {threshold_gb} GB)"
+                )
+        except Exception as e:
+            logger.debug(f"Could not check LAN disk space: {e}")
+
+        # Check backup duration and warn if unusually slow
+        duration_minutes = duration / 60
+        duration_threshold = config.alerts.backup_duration_warning_minutes
+        if duration_minutes > duration_threshold:
+            logger.warning(
+                f"Backup run took {duration_minutes:.0f} minutes "
+                f"(threshold: {duration_threshold} minutes) — "
+                f"check network speed and source drive health"
+            )
+
+        # Test restore: verify random files from LAN and GCS
+        if config.test_restore.enabled:
+            try:
+                run_counter = _get_and_increment_run_counter(config.paths.log_directory)
+                if run_counter % config.test_restore.run_every_n_backups == 0:
+                    logger.info(
+                        f"Running test restore verification "
+                        f"(every {config.test_restore.run_every_n_backups} runs, "
+                        f"sample count: {config.test_restore.sample_count})"
+                    )
+                    test_restore_task(
+                        database_path=config.paths.database_path,
+                        source_drive=config.paths.source_drive,
+                        lan_destination=config.paths.lan_destination,
+                        cloud_enabled=config.cloud_backup.enabled,
+                        gcs_key_path=gcs_key_path,
+                        cloud_bucket=config.cloud_backup.bucket,
+                        cloud_remote_path=config.cloud_backup.remote_path,
+                        gcs_location=config.cloud_backup.gcs_location,
+                        sample_count=config.test_restore.sample_count,
+                    )
+                else:
+                    logger.info(
+                        f"Test restore skipped (run #{run_counter}, "
+                        f"next run in {config.test_restore.run_every_n_backups - (run_counter % config.test_restore.run_every_n_backups)} backups)"
+                    )
+            except Exception as e:
+                logger.warning(f"Test restore verification failed (non-critical): {e}")
+
+        # Generate weekly/monthly reports on scheduled days
+        try:
+            from datetime import datetime, timezone
+            today = datetime.now(timezone.utc)
+            today_name = today.strftime("%A").lower()
+
+            if config.notifications.weekly_summary_enabled and today_name == config.notifications.weekly_summary_day.lower():
+                logger.info(f"Generating weekly backup report ({today_name})")
+                smtp_config = {
+                    "smtp_host": config.notifications.smtp_host,
+                    "smtp_port": config.notifications.smtp_port,
+                    "smtp_username": config.notifications.smtp_username,
+                    "smtp_password_credential": config.notifications.smtp_password_credential,
+                    "sender": config.notifications.sender,
+                    "recipients": config.notifications.recipients,
+                }
+                generate_report_task(
+                    log_directory=config.paths.log_directory,
+                    report_type="weekly",
+                    smtp_config=smtp_config,
+                )
+
+            if today.day == 1:
+                logger.info("Generating monthly backup report (1st of month)")
+                smtp_config = {
+                    "smtp_host": config.notifications.smtp_host,
+                    "smtp_port": config.notifications.smtp_port,
+                    "smtp_username": config.notifications.smtp_username,
+                    "smtp_password_credential": config.notifications.smtp_password_credential,
+                    "sender": config.notifications.sender,
+                    "recipients": config.notifications.recipients,
+                }
+                generate_report_task(
+                    log_directory=config.paths.log_directory,
+                    report_type="monthly",
+                    smtp_config=smtp_config,
+                )
+        except Exception as e:
+            logger.warning(f"Report generation failed (non-critical): {e}")
+
+        # Backup config.yaml to LAN and cloud destinations
+        try:
+            from tasks.config_backup_task import backup_config_task
+            backup_config_task(
+                config_path=config_path,
+                lan_destination=config.paths.lan_destination,
+                cloud_enabled=config.cloud_backup.enabled,
+                gcs_key_path=gcs_key_path,
+                cloud_bucket=config.cloud_backup.bucket,
+                cloud_remote_path=config.cloud_backup.remote_path,
+                gcs_location=config.cloud_backup.gcs_location,
+            )
+        except Exception as e:
+            logger.warning(f"Config backup failed (non-critical): {e}")
 
         return overall
 

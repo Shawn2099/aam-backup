@@ -34,7 +34,7 @@ def generate_report_task(
     """
     logger = get_run_logger()
 
-    metrics_file = Path(log_directory) / "metrics.jsonl"
+    metrics_file = Path(log_directory) / "backup_metrics.jsonl"
     if not metrics_file.exists():
         logger.warning(f"No metrics file found at {metrics_file}")
         return {"status": "SKIPPED", "reason": "no metrics data"}
