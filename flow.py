@@ -178,7 +178,11 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         logger.warning(f"VSS snapshot failed (non-critical): {e}")
 
     # Task 2: Pre-flight checks
-    config = preflight_task(config.model_dump())
+    preflight_result = preflight_task(config.model_dump())
+    config_dict = preflight_result["config"]
+    # Rebuild config from dict (preflight may have validated/normalized values)
+    from models.config_model import AppConfig
+    config = AppConfig(**config_dict)
 
     # Task 3: Scan drive
     scan_result = scan_task(config, config.paths.database_path)

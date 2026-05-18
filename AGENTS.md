@@ -64,7 +64,7 @@ Soft delete, custom versioning, anomaly detection, canary files, integrity verif
 | 3 | Batch manifest lookups in scanner (200K+ files) | Critical | ✅ Done — `get_all_entries()` bulk load + in-memory dict |
 | 4 | `deploy/setup_email_notifications.py` → real Prefect automations | Critical | ✅ Done — creates EmailServerCredentials block + automations |
 | 5 | `install_services.bat` / `uninstall_services.bat` for deployment | Critical | ✅ Done — created in `deploy/` |
-| 6 | VSS for locked Tally/Winman files (if apps run overnight) | Important | Pending (client confirmation) |
+| 6 | VSS for locked Tally/Winman files (if apps run overnight) | Important | ✅ Done — `core/vss.py` + `tasks/vss_task.py`, fallback to direct if fails |
 | 7 | Alerting on extended "no changes" periods | Important | ✅ Done — `alerts.no_changes_warning_days` config + flow check |
 | 8 | `.env.example` for deployment documentation | Nice-to-have | ✅ Done |
 | 9 | UI `/health` endpoint for NSSM monitoring | Nice-to-have | ✅ Done |

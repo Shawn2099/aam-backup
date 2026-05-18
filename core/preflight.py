@@ -1,62 +1,307 @@
-"""Pre-flight checks before backup execution.
+"""Comprehensive pre-flight checks before backup execution.
 
-Runs before the backup flow starts to catch problems early.
+Covers system health, storage, network, credentials, services, VSS, GCS,
+configuration, database, security, binaries, and previous run analysis.
 All checks are independent — one failure doesn't stop others.
 """
 
+import platform
 import shutil
+import socket
 import subprocess
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
+from typing import Optional
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+try:
+    import ntplib
+except ImportError:
+    ntplib = None
 
 from loguru import logger
+
+
+class Severity(str, Enum):
+    """Severity levels for pre-flight check results."""
+    PASS = "PASS"
+    WARN = "WARN"
+    FAIL = "FAIL"
+    SKIP = "SKIP"
 
 
 @dataclass
 class CheckResult:
     """Result of a single pre-flight check."""
+    category: str
     name: str
-    passed: bool
+    severity: Severity
     message: str
-    warning: bool = False
+    details: str = ""
+    metric: Optional[float] = None
+    threshold: Optional[float] = None
+
+    @property
+    def passed(self) -> bool:
+        return self.severity in (Severity.PASS, Severity.SKIP, Severity.WARN)
+
+    @property
+    def is_warning(self) -> bool:
+        return self.severity == Severity.WARN
+
+    @property
+    def is_failure(self) -> bool:
+        return self.severity == Severity.FAIL
 
 
 @dataclass
 class PreflightReport:
     """Aggregated report from all pre-flight checks."""
     checks: list[CheckResult] = field(default_factory=list)
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
+    duration_seconds: float = 0.0
 
     @property
     def all_passed(self) -> bool:
-        """True if all critical checks passed (warnings allowed)."""
-        return all(c.passed for c in self.checks)
+        """True if no critical checks failed (warnings allowed)."""
+        return not any(c.is_failure for c in self.checks)
 
     @property
     def has_warnings(self) -> bool:
-        """True if any checks have warnings."""
-        return any(c.warning for c in self.checks)
+        return any(c.is_warning for c in self.checks)
 
     @property
     def failures(self) -> list[CheckResult]:
-        """List of failed checks."""
-        return [c for c in self.checks if not c.passed]
+        return [c for c in self.checks if c.is_failure]
+
+    @property
+    def warnings(self) -> list[CheckResult]:
+        return [c for c in self.checks if c.is_warning]
+
+    @property
+    def skipped(self) -> list[CheckResult]:
+        return [c for c in self.checks if c.severity == Severity.SKIP]
 
     def summary(self) -> str:
         """Generate a human-readable summary."""
-        lines = ["=" * 50, "Pre-Flight Check Results", "=" * 50]
-        for check in self.checks:
-            status = "PASS" if check.passed else "FAIL"
-            if check.warning:
-                status = "WARN"
-            lines.append(f"  [{status}] {check.name}: {check.message}")
+        lines = [
+            "=" * 60,
+            "Pre-Flight Check Report",
+            f"Started: {self.started_at.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+            f"Duration: {self.duration_seconds:.1f}s",
+            "=" * 60,
+        ]
 
-        lines.append("=" * 50)
+        # Group by category
+        categories = {}
+        for check in self.checks:
+            categories.setdefault(check.category, []).append(check)
+
+        for category, checks in sorted(categories.items()):
+            lines.append(f"\n[{category}]")
+            for check in checks:
+                status = check.severity.value
+                line = f"  [{status}] {check.name}: {check.message}"
+                if check.details:
+                    line += f"\n         {check.details}"
+                if check.metric is not None and check.threshold is not None:
+                    line += f" ({check.metric:.1f} / {check.threshold:.1f})"
+                lines.append(line)
+
+        lines.append("\n" + "=" * 60)
+        passed = sum(1 for c in self.checks if c.severity == Severity.PASS)
+        warned = len(self.warnings)
+        failed = len(self.failures)
+        skipped = len(self.skipped)
+        lines.append(f"Results: {passed} passed, {warned} warnings, {failed} failed, {skipped} skipped")
+
         if self.all_passed:
-            lines.append("All checks passed")
+            lines.append("Status: READY TO PROCEED")
         else:
-            lines.append(f"{len(self.failures)} check(s) failed")
+            lines.append("Status: BLOCKED — fix failures before running backup")
+
         return "\n".join(lines)
 
+    def to_dict(self) -> dict:
+        """Convert report to dictionary for logging/UI."""
+        return {
+            "started_at": self.started_at.isoformat(),
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "duration_seconds": self.duration_seconds,
+            "all_passed": self.all_passed,
+            "has_warnings": self.has_warnings,
+            "total_checks": len(self.checks),
+            "passed": sum(1 for c in self.checks if c.severity == Severity.PASS),
+            "warnings": len(self.warnings),
+            "failures": len(self.failures),
+            "skipped": len(self.skipped),
+            "checks": [
+                {
+                    "category": c.category,
+                    "name": c.name,
+                    "severity": c.severity.value,
+                    "message": c.message,
+                    "details": c.details,
+                }
+                for c in self.checks
+            ],
+        }
+
+
+# ─── System Health Checks ───────────────────────────────────────────────
+
+def check_disk_space(path: str, min_free_gb: float = 10.0) -> CheckResult:
+    """Check available disk space on a path."""
+    try:
+        usage = shutil.disk_usage(str(path))
+        free_gb = usage.free / (1024 ** 3)
+        total_gb = usage.total / (1024 ** 3)
+        used_pct = (usage.used / usage.total) * 100
+
+        if free_gb < min_free_gb:
+            return CheckResult(
+                category="System",
+                name=f"Disk Space ({path})",
+                severity=Severity.FAIL,
+                message=f"Only {free_gb:.1f}GB free (minimum: {min_free_gb:.1f}GB)",
+                metric=free_gb,
+                threshold=min_free_gb,
+            )
+
+        # Warn if less than 20% free
+        if used_pct > 80:
+            return CheckResult(
+                category="System",
+                name=f"Disk Space ({path})",
+                severity=Severity.WARN,
+                message=f"{free_gb:.1f}GB free ({used_pct:.0f}% used) — space running low",
+                metric=free_gb,
+                threshold=min_free_gb,
+            )
+
+        return CheckResult(
+            category="System",
+            name=f"Disk Space ({path})",
+            severity=Severity.PASS,
+            message=f"{free_gb:.1f}GB free of {total_gb:.1f}GB ({used_pct:.0f}% used)",
+            metric=free_gb,
+            threshold=min_free_gb,
+        )
+    except Exception as e:
+        return CheckResult(
+            category="System",
+            name=f"Disk Space ({path})",
+            severity=Severity.FAIL,
+            message=f"Cannot check disk space: {e}",
+        )
+
+
+def check_time_sync(max_drift_seconds: float = 300.0) -> CheckResult:
+    """Check if system clock is reasonably synchronized."""
+    try:
+        local_time = time.time()
+
+        if ntplib is None:
+            return CheckResult(
+                category="System",
+                name="Time Sync",
+                severity=Severity.WARN,
+                message="Cannot verify time sync (ntplib not installed)",
+                details="Install ntplib: pip install ntplib",
+            )
+
+        try:
+            client = ntplib.NTPClient()
+            response = client.request("pool.ntp.org", version=3, timeout=5)
+            drift = abs(local_time - response.tx_time)
+        except Exception:
+            return CheckResult(
+                category="System",
+                name="Time Sync",
+                severity=Severity.WARN,
+                message="Cannot verify time sync (NTP request failed)",
+                details="Install ntplib: pip install ntplib",
+            )
+
+        if drift > max_drift_seconds:
+            return CheckResult(
+                category="System",
+                name="Time Sync",
+                severity=Severity.WARN,
+                message=f"Clock drift: {drift:.0f}s (max: {max_drift_seconds:.0f}s)",
+                metric=drift,
+                threshold=max_drift_seconds,
+            )
+
+        return CheckResult(
+            category="System",
+            name="Time Sync",
+            severity=Severity.PASS,
+            message=f"Clock drift: {drift:.1f}s",
+            metric=drift,
+            threshold=max_drift_seconds,
+        )
+    except Exception as e:
+        return CheckResult(
+            category="System",
+            name="Time Sync",
+            severity=Severity.WARN,
+            message=f"Cannot check time sync: {e}",
+        )
+
+
+def check_system_memory(min_free_mb: float = 256.0) -> CheckResult:
+    """Check available system memory."""
+    if psutil is None:
+        return CheckResult(
+            category="System",
+            name="Memory",
+            severity=Severity.SKIP,
+            message="psutil not installed — skipping memory check",
+        )
+
+    try:
+        mem = psutil.virtual_memory()
+        free_mb = mem.available / (1024 ** 2)
+        total_mb = mem.total / (1024 ** 2)
+        used_pct = mem.percent
+
+        if free_mb < min_free_mb:
+            return CheckResult(
+                category="System",
+                name="Memory",
+                severity=Severity.WARN,
+                message=f"Only {free_mb:.0f}MB free of {total_mb:.0f}MB ({used_pct:.0f}% used)",
+                metric=free_mb,
+                threshold=min_free_mb,
+            )
+
+        return CheckResult(
+            category="System",
+            name="Memory",
+            severity=Severity.PASS,
+            message=f"{free_mb:.0f}MB free of {total_mb:.0f}MB ({used_pct:.0f}% used)",
+            metric=free_mb,
+            threshold=min_free_mb,
+        )
+    except Exception as e:
+        return CheckResult(
+            category="System",
+            name="Memory",
+            severity=Severity.WARN,
+            message=f"Cannot check memory: {e}",
+        )
+
+
+# ─── Storage Checks ─────────────────────────────────────────────────────
 
 def check_source_drive(path: str) -> CheckResult:
     """Check that the source drive exists and is readable."""
@@ -64,26 +309,38 @@ def check_source_drive(path: str) -> CheckResult:
         source = Path(path)
         if not source.exists():
             return CheckResult(
+                category="Storage",
                 name="Source Drive",
-                passed=False,
+                severity=Severity.FAIL,
                 message=f"Source drive not found: {path}",
             )
 
-        # Get disk usage
+        # Check readability
+        try:
+            list(source.iterdir())
+        except PermissionError:
+            return CheckResult(
+                category="Storage",
+                name="Source Drive",
+                severity=Severity.FAIL,
+                message=f"Source drive exists but not readable: {path}",
+            )
+
         usage = shutil.disk_usage(str(source))
-        free_gb = usage.free / (1024 ** 3)
         total_gb = usage.total / (1024 ** 3)
         used_pct = (usage.used / usage.total) * 100
 
         return CheckResult(
+            category="Storage",
             name="Source Drive",
-            passed=True,
-            message=f"{total_gb:.1f}GB total, {free_gb:.1f}GB free ({used_pct:.0f}% used)",
+            severity=Severity.PASS,
+            message=f"{total_gb:.1f}GB total, {used_pct:.0f}% used",
         )
     except Exception as e:
         return CheckResult(
+            category="Storage",
             name="Source Drive",
-            passed=False,
+            severity=Severity.FAIL,
             message=f"Error checking source drive: {e}",
         )
 
@@ -91,26 +348,40 @@ def check_source_drive(path: str) -> CheckResult:
 def check_lan_destination(path: str, server_ip: str) -> CheckResult:
     """Check LAN destination accessibility and disk space."""
     try:
-        # On Windows, try to access the share
-        import platform
+        # Check network connectivity first
+        try:
+            socket.gethostbyname(server_ip)
+        except socket.gaierror:
+            return CheckResult(
+                category="Storage",
+                name="LAN Destination",
+                severity=Severity.FAIL,
+                message=f"Cannot resolve hostname: {server_ip}",
+            )
+
         if platform.system() == "Windows":
             dest = Path(path)
             if not dest.exists():
                 return CheckResult(
+                    category="Storage",
                     name="LAN Destination",
-                    passed=False,
+                    severity=Severity.FAIL,
                     message=f"LAN share not accessible: {path}",
                 )
 
             usage = shutil.disk_usage(str(dest))
             free_gb = usage.free / (1024 ** 3)
+            total_gb = usage.total / (1024 ** 3)
+
+            # LAN should have at least 20% more space than source
             return CheckResult(
+                category="Storage",
                 name="LAN Destination",
-                passed=True,
-                message=f"{free_gb:.1f}GB free on {path}",
+                severity=Severity.PASS,
+                message=f"{free_gb:.1f}GB free of {total_gb:.1f}GB on {path}",
             )
         else:
-            # On Linux, just ping the server
+            # Linux dev mode — ping only
             result = subprocess.run(
                 ["ping", "-c", "1", "-W", "3", server_ip],
                 capture_output=True,
@@ -119,36 +390,348 @@ def check_lan_destination(path: str, server_ip: str) -> CheckResult:
             )
             if result.returncode == 0:
                 return CheckResult(
+                    category="Storage",
                     name="LAN Destination",
-                    passed=True,
+                    severity=Severity.PASS,
                     message=f"Server {server_ip} reachable (Linux dev mode)",
                 )
             else:
                 return CheckResult(
+                    category="Storage",
                     name="LAN Destination",
-                    passed=False,
+                    severity=Severity.FAIL,
                     message=f"Server {server_ip} not reachable",
                 )
     except subprocess.TimeoutExpired:
         return CheckResult(
+            category="Storage",
             name="LAN Destination",
-            passed=False,
+            severity=Severity.FAIL,
             message=f"Ping to {server_ip} timed out",
         )
     except Exception as e:
         return CheckResult(
+            category="Storage",
             name="LAN Destination",
-            passed=False,
+            severity=Severity.FAIL,
             message=f"Error checking LAN destination: {e}",
         )
 
+
+def check_temp_directory(path: str) -> CheckResult:
+    """Check that the temp directory exists and has space."""
+    try:
+        temp = Path(path)
+        temp.mkdir(parents=True, exist_ok=True)
+
+        usage = shutil.disk_usage(str(temp))
+        free_gb = usage.free / (1024 ** 3)
+
+        if free_gb < 1.0:
+            return CheckResult(
+                category="Storage",
+                name="Temp Directory",
+                severity=Severity.FAIL,
+                message=f"Only {free_gb:.1f}GB free in temp directory",
+            )
+
+        return CheckResult(
+            category="Storage",
+            name="Temp Directory",
+            severity=Severity.PASS,
+            message=f"{free_gb:.1f}GB free",
+        )
+    except Exception as e:
+        return CheckResult(
+            category="Storage",
+            name="Temp Directory",
+            severity=Severity.FAIL,
+            message=f"Temp directory not writable: {e}",
+        )
+
+
+# ─── Network Checks ─────────────────────────────────────────────────────
+
+def check_dns_resolution(hostname: str) -> CheckResult:
+    """Check that a hostname can be resolved."""
+    try:
+        ip = socket.gethostbyname(hostname)
+        return CheckResult(
+            category="Network",
+            name=f"DNS ({hostname})",
+            severity=Severity.PASS,
+            message=f"Resolved to {ip}",
+        )
+    except socket.gaierror:
+        return CheckResult(
+            category="Network",
+            name=f"DNS ({hostname})",
+            severity=Severity.FAIL,
+            message=f"Cannot resolve: {hostname}",
+        )
+
+
+def check_port_connectivity(host: str, port: int, timeout: float = 5.0) -> CheckResult:
+    """Check that a port is open on a host."""
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        return CheckResult(
+            category="Network",
+            name=f"Port ({host}:{port})",
+            severity=Severity.PASS,
+            message=f"Port {port} open",
+        )
+    except (socket.timeout, ConnectionRefusedError, OSError) as e:
+        return CheckResult(
+            category="Network",
+            name=f"Port ({host}:{port})",
+            severity=Severity.FAIL,
+            message=f"Port {port} not reachable: {e}",
+        )
+
+
+def check_ping(host: str, count: int = 3, timeout: float = 10.0) -> CheckResult:
+    """Check connectivity via ping."""
+    try:
+        if platform.system() == "Windows":
+            cmd = ["ping", "-n", str(count), "-w", "3000", host]
+        else:
+            cmd = ["ping", "-c", str(count), "-W", "3", host]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+        if result.returncode == 0:
+            # Parse average latency if possible
+            avg_ms = None
+            for line in result.stdout.splitlines():
+                if "avg" in line.lower() or "average" in line.lower():
+                    try:
+                        parts = line.split("=")[-1].split("/")
+                        avg_ms = float(parts[1])
+                    except (IndexError, ValueError):
+                        pass
+            msg = f"{count}/{count} packets received"
+            if avg_ms is not None:
+                msg += f", avg latency: {avg_ms:.1f}ms"
+            return CheckResult(
+                category="Network",
+                name=f"Ping ({host})",
+                severity=Severity.PASS,
+                message=msg,
+                metric=avg_ms,
+            )
+        else:
+            return CheckResult(
+                category="Network",
+                name=f"Ping ({host})",
+                severity=Severity.FAIL,
+                message=f"Ping failed (exit code: {result.returncode})",
+            )
+    except subprocess.TimeoutExpired:
+        return CheckResult(
+            category="Network",
+            name=f"Ping ({host})",
+            severity=Severity.FAIL,
+            message=f"Ping timed out after {timeout}s",
+        )
+    except Exception as e:
+        return CheckResult(
+            category="Network",
+            name=f"Ping ({host})",
+            severity=Severity.FAIL,
+            message=f"Ping error: {e}",
+        )
+
+
+# ─── Credential Checks ──────────────────────────────────────────────────
+
+def check_credential_manager(credential_name: str) -> CheckResult:
+    """Check that a credential exists in Windows Credential Manager."""
+    if platform.system() != "Windows":
+        return CheckResult(
+            category="Credentials",
+            name=f"Credential ({credential_name})",
+            severity=Severity.WARN,
+            message="Windows Credential Manager not available (Linux dev mode)",
+        )
+
+    try:
+        import keyring
+        cred = keyring.get_password("BackupAgent", credential_name)
+        if cred:
+            return CheckResult(
+                category="Credentials",
+                name=f"Credential ({credential_name})",
+                severity=Severity.PASS,
+                message="Found in Credential Manager",
+            )
+        else:
+            return CheckResult(
+                category="Credentials",
+                name=f"Credential ({credential_name})",
+                severity=Severity.FAIL,
+                message=f"Not found in Credential Manager",
+            )
+    except ImportError:
+        return CheckResult(
+            category="Credentials",
+            name=f"Credential ({credential_name})",
+            severity=Severity.FAIL,
+            message="keyring package not installed",
+        )
+    except Exception as e:
+        return CheckResult(
+            category="Credentials",
+            name=f"Credential ({credential_name})",
+            severity=Severity.FAIL,
+            message=f"Error accessing Credential Manager: {e}",
+        )
+
+
+def check_smtp_config(config: dict) -> CheckResult:
+    """Check SMTP configuration completeness."""
+    smtp_host = config.get("smtp_host", "")
+    smtp_port = config.get("smtp_port", 587)
+    smtp_username = config.get("smtp_username", "")
+    sender = config.get("sender", "")
+    recipients = config.get("recipients", [])
+
+    missing = []
+    if not smtp_host:
+        missing.append("smtp_host")
+    if not smtp_username:
+        missing.append("smtp_username")
+    if not sender:
+        missing.append("sender")
+    if not recipients:
+        missing.append("recipients")
+
+    if missing:
+        return CheckResult(
+            category="Credentials",
+            name="SMTP Config",
+            severity=Severity.WARN,
+            message=f"SMTP not fully configured: {', '.join(missing)}",
+            details="Email notifications will not work until configured",
+        )
+
+    # Test SMTP connectivity
+    try:
+        import smtplib
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
+        server.ehlo()
+        if smtp_port == 587:
+            server.starttls()
+        server.quit()
+        return CheckResult(
+            category="Credentials",
+            name="SMTP Config",
+            severity=Severity.PASS,
+            message=f"SMTP server reachable at {smtp_host}:{smtp_port}",
+        )
+    except Exception as e:
+        return CheckResult(
+            category="Credentials",
+            name="SMTP Config",
+            severity=Severity.WARN,
+            message=f"SMTP server not reachable: {e}",
+        )
+
+
+# ─── Service Checks ─────────────────────────────────────────────────────
+
+def check_vss_service() -> CheckResult:
+    """Check that VSS service is running (Windows only)."""
+    if platform.system() != "Windows":
+        return CheckResult(
+            category="Services",
+            name="VSS Service",
+            severity=Severity.SKIP,
+            message="VSS not available on Linux",
+        )
+
+    try:
+        result = subprocess.run(
+            ["sc", "query", "vss"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if "RUNNING" in result.stdout:
+            return CheckResult(
+                category="Services",
+                name="VSS Service",
+                severity=Severity.PASS,
+                message="VSS service running",
+            )
+        else:
+            return CheckResult(
+                category="Services",
+                name="VSS Service",
+                severity=Severity.WARN,
+                message="VSS service not running",
+                details="VSS shadow copies will not work until service is started",
+            )
+    except Exception as e:
+        return CheckResult(
+            category="Services",
+            name="VSS Service",
+            severity=Severity.WARN,
+            message=f"Cannot check VSS service: {e}",
+        )
+
+
+def check_prefect_worker(prefect_api_url: str) -> CheckResult:
+    """Check that Prefect API is reachable."""
+    try:
+        import urllib.request
+        url = f"{prefect_api_url}/health"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status == 200:
+                return CheckResult(
+                    category="Services",
+                    name="Prefect API",
+                    severity=Severity.PASS,
+                    message=f"Prefect API healthy at {prefect_api_url}",
+                )
+    except Exception:
+        pass
+
+    # Fallback: check if port is open
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(prefect_api_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 4200
+
+        sock = socket.create_connection((host, port), timeout=5)
+        sock.close()
+        return CheckResult(
+            category="Services",
+            name="Prefect API",
+            severity=Severity.PASS,
+            message=f"Prefect port {port} open",
+        )
+    except Exception as e:
+        return CheckResult(
+            category="Services",
+            name="Prefect API",
+            severity=Severity.WARN,
+            message=f"Prefect API not reachable: {e}",
+        )
+
+
+# ─── GCS Checks ─────────────────────────────────────────────────────────
 
 def check_gcs_connectivity(bucket: str) -> CheckResult:
     """Check GCS bucket connectivity via rclone."""
     if not bucket:
         return CheckResult(
+            category="Cloud",
             name="GCS Bucket",
-            passed=False,
+            severity=Severity.FAIL,
             message="No bucket configured",
         )
 
@@ -161,100 +744,223 @@ def check_gcs_connectivity(bucket: str) -> CheckResult:
         )
         if result.returncode == 0:
             return CheckResult(
+                category="Cloud",
                 name="GCS Bucket",
-                passed=True,
+                severity=Severity.PASS,
                 message=f"Bucket {bucket} accessible",
             )
         else:
             return CheckResult(
+                category="Cloud",
                 name="GCS Bucket",
-                passed=False,
+                severity=Severity.FAIL,
                 message=f"Bucket access failed: {result.stderr.strip()}",
             )
     except FileNotFoundError:
         return CheckResult(
+            category="Cloud",
             name="GCS Bucket",
-            passed=False,
+            severity=Severity.FAIL,
             message="rclone not found in PATH",
         )
     except subprocess.TimeoutExpired:
         return CheckResult(
+            category="Cloud",
             name="GCS Bucket",
-            passed=False,
+            severity=Severity.FAIL,
             message="Connection timed out",
         )
     except Exception as e:
         return CheckResult(
+            category="Cloud",
             name="GCS Bucket",
-            passed=False,
+            severity=Severity.FAIL,
             message=f"Error checking GCS: {e}",
         )
 
 
-def check_binaries() -> list[CheckResult]:
-    """Check that required binaries are available."""
+def check_gcs_versioning(bucket: str) -> CheckResult:
+    """Check that GCS versioning is enabled on the bucket."""
+    if not bucket:
+        return CheckResult(
+            category="Cloud",
+            name="GCS Versioning",
+            severity=Severity.SKIP,
+            message="No bucket configured",
+        )
+
+    try:
+        result = subprocess.run(
+            ["rclone", "backend", "versioning", f"{bucket}:"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and "Enabled" in result.stdout:
+            return CheckResult(
+                category="Cloud",
+                name="GCS Versioning",
+                severity=Severity.PASS,
+                message="Versioning enabled",
+            )
+        else:
+            return CheckResult(
+                category="Cloud",
+                name="GCS Versioning",
+                severity=Severity.WARN,
+                message="Versioning not enabled or cannot be checked",
+                details="Run: gsutil versioning set on gs://BUCKET",
+            )
+    except Exception:
+        return CheckResult(
+            category="Cloud",
+            name="GCS Versioning",
+            severity=Severity.WARN,
+            message="Cannot check versioning status",
+        )
+
+
+def check_rclone_version() -> CheckResult:
+    """Check rclone version is recent enough."""
+    try:
+        result = subprocess.run(
+            ["rclone", "version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            # Parse version from output
+            version_line = result.stdout.splitlines()[0] if result.stdout else ""
+            return CheckResult(
+                category="Cloud",
+                name="Rclone Version",
+                severity=Severity.PASS,
+                message=version_line,
+            )
+        else:
+            return CheckResult(
+                category="Cloud",
+                name="Rclone Version",
+                severity=Severity.FAIL,
+                message="rclone version command failed",
+            )
+    except FileNotFoundError:
+        return CheckResult(
+            category="Cloud",
+            name="Rclone Version",
+            severity=Severity.FAIL,
+            message="rclone not found in PATH",
+        )
+    except Exception as e:
+        return CheckResult(
+            category="Cloud",
+            name="Rclone Version",
+            severity=Severity.FAIL,
+            message=f"Error checking rclone version: {e}",
+        )
+
+
+# ─── Configuration Checks ───────────────────────────────────────────────
+
+def check_config_completeness(config: dict) -> list[CheckResult]:
+    """Check that all required config values are set."""
     results = []
 
-    # Robocopy (Windows only)
-    import platform
-    if platform.system() == "Windows":
-        if shutil.which("robocopy"):
-            results.append(CheckResult(
-                name="Robocopy",
-                passed=True,
-                message="Found in PATH",
-            ))
-        else:
-            results.append(CheckResult(
-                name="Robocopy",
-                passed=False,
-                message="Not found in PATH",
-            ))
-    else:
-        results.append(CheckResult(
-            name="Robocopy",
-            passed=True,
-            message="Skipped (Linux dev mode)",
-            warning=True,
-        ))
+    # Check for placeholder/empty values
+    placeholders = {
+        "wol.mac_address": config.get("wol", {}).get("mac_address", ""),
+        "cloud_backup.bucket": config.get("cloud_backup", {}).get("bucket", ""),
+        "notifications.smtp_host": config.get("notifications", {}).get("smtp_host", ""),
+        "notifications.smtp_username": config.get("notifications", {}).get("smtp_username", ""),
+        "notifications.sender": config.get("notifications", {}).get("sender", ""),
+    }
 
-    # Rclone
-    if shutil.which("rclone"):
-        results.append(CheckResult(
-            name="Rclone",
-            passed=True,
-            message="Found in PATH",
-        ))
-    else:
-        results.append(CheckResult(
-            name="Rclone",
-            passed=False,
-            message="Not found in PATH",
-        ))
+    for key, value in placeholders.items():
+        if not value:
+            results.append(CheckResult(
+                category="Configuration",
+                name=f"Config: {key}",
+                severity=Severity.WARN,
+                message=f"Empty placeholder value for {key}",
+            ))
+
+    # Check exclude folders reference valid paths
+    exclude_folders = config.get("backup_scope", {}).get("exclude_folders", [])
+    for folder in exclude_folders:
+        if not Path(folder).exists() and platform.system() == "Windows":
+            results.append(CheckResult(
+                category="Configuration",
+                name=f"Exclude: {folder}",
+                severity=Severity.WARN,
+                message=f"Exclude folder does not exist: {folder}",
+            ))
 
     return results
 
 
+# ─── Database Checks ────────────────────────────────────────────────────
+
 def check_database(db_path: str) -> CheckResult:
-    """Check that the database directory is writable."""
+    """Check that the database directory is writable and schema is valid."""
     try:
         db = Path(db_path)
         db.parent.mkdir(parents=True, exist_ok=True)
 
-        # Check if we can write to the directory
+        # Check write permission
         test_file = db.parent / ".preflight_test"
         test_file.touch()
         test_file.unlink()
 
+        # If database exists, check schema
+        if db.exists():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(db))
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [row[0] for row in cursor.fetchall()]
+
+                if "manifest" not in tables:
+                    return CheckResult(
+                        category="Database",
+                        name="Manifest DB",
+                        severity=Severity.WARN,
+                        message="Database exists but manifest table missing",
+                        details="Table will be created on first run",
+                    )
+
+                # Check row count
+                cursor.execute("SELECT COUNT(*) FROM manifest")
+                row_count = cursor.fetchone()[0]
+                conn.close()
+
+                return CheckResult(
+                    category="Database",
+                    name="Manifest DB",
+                    severity=Severity.PASS,
+                    message=f"{row_count} files tracked",
+                    metric=float(row_count),
+                )
+            except Exception as e:
+                return CheckResult(
+                    category="Database",
+                    name="Manifest DB",
+                    severity=Severity.WARN,
+                    message=f"Database schema check failed: {e}",
+                )
+
         return CheckResult(
-            name="Database",
-            passed=True,
-            message=f"Directory writable: {db.parent}",
+            category="Database",
+            name="Manifest DB",
+            severity=Severity.PASS,
+            message=f"Directory writable, database will be created",
         )
     except Exception as e:
         return CheckResult(
-            name="Database",
-            passed=False,
+            category="Database",
+            name="Manifest DB",
+            severity=Severity.FAIL,
             message=f"Database directory not writable: {e}",
         )
 
@@ -265,37 +971,105 @@ def check_log_directory(log_path: str) -> CheckResult:
         log_dir = Path(log_path)
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check if we can write to the directory
         test_file = log_dir / ".preflight_test"
         test_file.touch()
         test_file.unlink()
 
         return CheckResult(
+            category="Database",
             name="Log Directory",
-            passed=True,
+            severity=Severity.PASS,
             message=f"Directory writable: {log_dir}",
         )
     except Exception as e:
         return CheckResult(
+            category="Database",
             name="Log Directory",
-            passed=False,
+            severity=Severity.FAIL,
             message=f"Log directory not writable: {e}",
         )
 
 
+# ─── Binary Checks ──────────────────────────────────────────────────────
+
+def check_binaries() -> list[CheckResult]:
+    """Check that required binaries are available with versions."""
+    results = []
+
+    # Robocopy (Windows only)
+    if platform.system() == "Windows":
+        robocopy_path = shutil.which("robocopy")
+        if robocopy_path:
+            results.append(CheckResult(
+                category="Binaries",
+                name="Robocopy",
+                severity=Severity.PASS,
+                message=f"Found at {robocopy_path}",
+            ))
+        else:
+            results.append(CheckResult(
+                category="Binaries",
+                name="Robocopy",
+                severity=Severity.FAIL,
+                message="Not found in PATH",
+            ))
+    else:
+        results.append(CheckResult(
+            category="Binaries",
+            name="Robocopy",
+            severity=Severity.SKIP,
+            message="Skipped (Linux dev mode)",
+        ))
+
+    # Rclone
+    rclone_path = shutil.which("rclone")
+    if rclone_path:
+        results.append(CheckResult(
+            category="Binaries",
+            name="Rclone",
+            severity=Severity.PASS,
+            message=f"Found at {rclone_path}",
+        ))
+    else:
+        results.append(CheckResult(
+            category="Binaries",
+            name="Rclone",
+            severity=Severity.FAIL,
+            message="Not found in PATH",
+        ))
+
+    # Python version
+    import sys
+    results.append(CheckResult(
+        category="Binaries",
+        name="Python",
+        severity=Severity.PASS,
+        message=f"{sys.version.split()[0]}",
+    ))
+
+    return results
+
+
+# ─── Main Runner ────────────────────────────────────────────────────────
+
 def run_preflight_checks(config: dict) -> PreflightReport:
-    """Run all pre-flight checks and return a report."""
-    logger.info("Running pre-flight checks...")
+    """Run all pre-flight checks and return a comprehensive report."""
+    start_time = time.time()
+    logger.info("Running comprehensive pre-flight checks...")
 
     report = PreflightReport()
     paths = config.get("paths", {})
     wol = config.get("wol", {})
     cloud = config.get("cloud_backup", {})
+    notifications = config.get("notifications", {})
+    ui = config.get("ui", {})
 
-    # Source drive
+    # System Health
+    report.checks.append(check_system_memory())
+    report.checks.append(check_time_sync())
+
+    # Storage
     report.checks.append(check_source_drive(paths.get("source_drive", "")))
-
-    # LAN destination
     if config.get("lan_backup", {}).get("enabled", False):
         report.checks.append(
             check_lan_destination(
@@ -303,19 +1077,42 @@ def run_preflight_checks(config: dict) -> PreflightReport:
                 wol.get("server_ip", ""),
             )
         )
+    report.checks.append(check_temp_directory(paths.get("rclone_temp_directory", "")))
+    report.checks.append(check_disk_space(paths.get("source_drive", ""), min_free_gb=5.0))
 
-    # GCS bucket
+    # Network
+    report.checks.append(check_ping(wol.get("server_ip", "127.0.0.1"), count=2))
     if cloud.get("enabled", False):
-        report.checks.append(check_gcs_connectivity(cloud.get("bucket", "")))
+        report.checks.append(check_dns_resolution("storage.googleapis.com"))
 
     # Binaries
     report.checks.extend(check_binaries())
+    report.checks.append(check_rclone_version())
+
+    # Credentials
+    report.checks.append(check_credential_manager(config.get("cloud_credentials", {}).get("credential_name", "")))
+    report.checks.append(check_smtp_config(notifications))
+
+    # Services
+    report.checks.append(check_prefect_worker(ui.get("prefect_api_url", "http://127.0.0.1:4200/api")))
+    if config.get("vss", {}).get("enabled", False):
+        report.checks.append(check_vss_service())
+
+    # Cloud
+    if cloud.get("enabled", False):
+        report.checks.append(check_gcs_connectivity(cloud.get("bucket", "")))
+        report.checks.append(check_gcs_versioning(cloud.get("bucket", "")))
+
+    # Configuration
+    report.checks.extend(check_config_completeness(config))
 
     # Database
     report.checks.append(check_database(paths.get("database_path", "")))
-
-    # Log directory
     report.checks.append(check_log_directory(paths.get("log_directory", "")))
+
+    # Finalize report
+    report.completed_at = datetime.now(timezone.utc)
+    report.duration_seconds = time.time() - start_time
 
     # Log results
     logger.info(report.summary())

@@ -1,4 +1,4 @@
-"""Prefect task for pre-flight checks."""
+"""Prefect task for comprehensive pre-flight checks."""
 
 from prefect import task
 from prefect.logging import get_run_logger
@@ -14,12 +14,17 @@ from core.preflight import run_preflight_checks
     task_run_name="preflight-checks",
 )
 def preflight_task(config: dict) -> dict:
-    """Run pre-flight checks before backup starts.
+    """Run comprehensive pre-flight checks before backup starts.
 
-    Returns the config if all checks pass, raises if any fail.
+    Returns a dict with:
+        - config: The original config (if checks pass)
+        - report: The PreflightReport as a dictionary
+        - all_passed: Boolean indicating if all checks passed
+
+    Raises RuntimeError if any critical checks fail.
     """
     logger = get_run_logger()
-    logger.info("Running pre-flight checks...")
+    logger.info("Running comprehensive pre-flight checks...")
 
     report = run_preflight_checks(config)
 
@@ -30,9 +35,17 @@ def preflight_task(config: dict) -> dict:
         raise RuntimeError(error_msg)
 
     if report.has_warnings:
-        warnings = [f"{c.name}: {c.message}" for c in report.checks if c.warning]
+        warnings = [f"{c.name}: {c.message}" for c in report.warnings]
         for w in warnings:
             logger.warning(f"Pre-flight warning: {w}")
 
-    logger.info("All pre-flight checks passed")
-    return config
+    logger.info(
+        f"All pre-flight checks passed "
+        f"({len(report.checks)} checks in {report.duration_seconds:.1f}s)"
+    )
+
+    return {
+        "config": config,
+        "report": report.to_dict(),
+        "all_passed": True,
+    }
