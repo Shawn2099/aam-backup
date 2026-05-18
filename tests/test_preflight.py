@@ -442,12 +442,42 @@ def test_check_gcs_no_bucket():
 
 
 def test_check_gcs_success():
-    """check_gcs_connectivity passes when bucket accessible."""
+    """check_gcs_connectivity passes when bucket accessible (read + write)."""
     with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stderr="")
-        result = check_gcs_connectivity("my-bucket")
-        assert result.severity == Severity.PASS
-        assert "accessible" in result.message
+        mock_run.return_value = MagicMock(returncode=0, stderr="", stdout="")
+        with patch("tempfile.NamedTemporaryFile") as mock_tmp:
+            mock_tmp.return_value.__enter__ = MagicMock(
+                return_value=MagicMock(write=MagicMock(), close=MagicMock(), name="/tmp/test.preflight")
+            )
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            with patch("pathlib.Path.exists", return_value=True):
+                with patch("pathlib.Path.unlink"):
+                    result = check_gcs_connectivity("my-bucket")
+                    assert result.severity == Severity.PASS
+                    assert "accessible" in result.message
+
+
+def test_check_gcs_write_failure():
+    """check_gcs_connectivity fails when bucket is readable but not writable."""
+    call_count = [0]
+    def side_effect(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return MagicMock(returncode=0, stderr="", stdout="")  # lsd succeeds
+        else:
+            return MagicMock(returncode=1, stderr="permission denied")  # copyto fails
+
+    with patch("subprocess.run", side_effect=side_effect):
+        with patch("tempfile.NamedTemporaryFile") as mock_tmp:
+            mock_file = MagicMock()
+            mock_file.name = "/tmp/test.preflight"
+            mock_tmp.return_value.__enter__ = MagicMock(return_value=mock_file)
+            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            with patch("pathlib.Path.exists", return_value=True):
+                with patch("pathlib.Path.unlink"):
+                    result = check_gcs_connectivity("my-bucket")
+                    assert result.severity == Severity.FAIL
+                    assert "not writable" in result.message
 
 
 def test_check_gcs_failure():

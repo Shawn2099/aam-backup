@@ -315,9 +315,9 @@ def check_source_drive(path: str) -> CheckResult:
                 message=f"Source drive not found: {path}",
             )
 
-        # Check readability
+        # Check readability — test a single file instead of loading entire directory
         try:
-            list(source.iterdir())
+            first_entry = next(source.iterdir(), None)
         except PermissionError:
             return CheckResult(
                 category="Storage",
@@ -726,7 +726,7 @@ def check_prefect_worker(prefect_api_url: str) -> CheckResult:
 # ─── GCS Checks ─────────────────────────────────────────────────────────
 
 def check_gcs_connectivity(bucket: str) -> CheckResult:
-    """Check GCS bucket connectivity via rclone."""
+    """Check GCS bucket connectivity via rclone (read + write)."""
     if not bucket:
         return CheckResult(
             category="Cloud",
@@ -736,26 +736,65 @@ def check_gcs_connectivity(bucket: str) -> CheckResult:
         )
 
     try:
+        # Check read access
         result = subprocess.run(
             ["rclone", "lsd", f"{bucket}:", "--max-depth", "1"],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        if result.returncode == 0:
-            return CheckResult(
-                category="Cloud",
-                name="GCS Bucket",
-                severity=Severity.PASS,
-                message=f"Bucket {bucket} accessible",
-            )
-        else:
+        if result.returncode != 0:
             return CheckResult(
                 category="Cloud",
                 name="GCS Bucket",
                 severity=Severity.FAIL,
                 message=f"Bucket access failed: {result.stderr.strip()}",
             )
+
+        # Check write access — create and delete a test file
+        import tempfile
+        test_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".preflight", delete=False
+        )
+        test_file.write("preflight check")
+        test_file.close()
+        test_path = Path(test_file.name)
+
+        try:
+            # Upload test file
+            upload = subprocess.run(
+                ["rclone", "copyto", str(test_path), f"{bucket}:_preflight_test.txt"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if upload.returncode != 0:
+                return CheckResult(
+                    category="Cloud",
+                    name="GCS Bucket",
+                    severity=Severity.FAIL,
+                    message=f"Bucket not writable: {upload.stderr.strip()}",
+                )
+
+            # Delete test file
+            subprocess.run(
+                ["rclone", "deletefile", f"{bucket}:_preflight_test.txt"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            return CheckResult(
+                category="Cloud",
+                name="GCS Bucket",
+                severity=Severity.PASS,
+                message=f"Bucket {bucket} accessible (read + write verified)",
+            )
+
+        finally:
+            if test_path.exists():
+                test_path.unlink()
+
     except FileNotFoundError:
         return CheckResult(
             category="Cloud",

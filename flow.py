@@ -21,6 +21,7 @@ from tasks.config_task import load_config_task
 from tasks.config_version_task import version_config_task
 from tasks.lan_task import lan_backup_task
 from tasks.log_backup_task import backup_logs_cloud_task
+from tasks.maintenance_task import maintain_manifest_db_task
 from tasks.manifest_backup_task import backup_manifest_db_task
 from tasks.metrics_task import collect_metrics_task
 from tasks.preflight_task import preflight_task
@@ -412,6 +413,12 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
             )
         except Exception as e:
             logger.warning(f"Metrics collection failed (non-critical): {e}")
+
+        # SQLite maintenance: VACUUM, WAL checkpoint, size monitoring
+        try:
+            maintain_manifest_db_task(config.paths.database_path, max_size_mb=500)
+        except Exception as e:
+            logger.warning(f"Manifest DB maintenance failed (non-critical): {e}")
 
         return overall
 

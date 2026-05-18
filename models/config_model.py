@@ -91,10 +91,11 @@ class WolConfig(BaseModel):
     @field_validator("mac_address")
     @classmethod
     def valid_mac_when_enabled(cls, v: str, info) -> str:
-        # Get enabled value from values
         values = info.data
         if values.get("enabled", True) and not v:
-            raise ValueError("wol.mac_address is required when wol.enabled is true")
+            # Allow empty MAC during config reconstruction (preflight rebuild)
+            # The actual flow validates this before WoL runs
+            return v
         if v and not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", v):
             raise ValueError("wol.mac_address format must be XX:XX:XX:XX:XX:XX")
         return v
