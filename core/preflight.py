@@ -345,7 +345,7 @@ def check_source_drive(path: str) -> CheckResult:
         )
 
 
-def check_lan_destination(path: str, server_ip: str) -> CheckResult:
+def check_lan_destination(path: str, server_ip: str, min_free_gb: float = 50.0) -> CheckResult:
     """Check LAN destination accessibility and disk space."""
     try:
         # Check network connectivity first
@@ -373,12 +373,23 @@ def check_lan_destination(path: str, server_ip: str) -> CheckResult:
             free_gb = usage.free / (1024 ** 3)
             total_gb = usage.total / (1024 ** 3)
 
-            # LAN should have at least 20% more space than source
+            if free_gb < min_free_gb:
+                return CheckResult(
+                    category="Storage",
+                    name="LAN Destination",
+                    severity=Severity.FAIL,
+                    message=f"Only {free_gb:.1f}GB free (minimum: {min_free_gb:.1f}GB)",
+                    metric=free_gb,
+                    threshold=min_free_gb,
+                )
+
             return CheckResult(
                 category="Storage",
                 name="LAN Destination",
                 severity=Severity.PASS,
                 message=f"{free_gb:.1f}GB free of {total_gb:.1f}GB on {path}",
+                metric=free_gb,
+                threshold=min_free_gb,
             )
         else:
             # Linux dev mode — ping only
@@ -724,6 +735,60 @@ def check_prefect_worker(prefect_api_url: str) -> CheckResult:
 
 
 # ─── GCS Checks ─────────────────────────────────────────────────────────
+
+def check_gcs_key_path(key_path: str) -> CheckResult:
+    """Check that the GCS service account key file exists and is valid JSON."""
+    if not key_path:
+        return CheckResult(
+            category="Cloud",
+            name="GCS Key File",
+            severity=Severity.FAIL,
+            message="GCS key path not configured",
+        )
+
+    key_file = Path(key_path)
+    if not key_file.exists():
+        return CheckResult(
+            category="Cloud",
+            name="GCS Key File",
+            severity=Severity.FAIL,
+            message=f"Key file not found: {key_path}",
+        )
+
+    # Validate JSON structure
+    try:
+        import json
+        with open(key_file) as f:
+            data = json.load(f)
+        if "type" not in data or data.get("type") != "service_account":
+            return CheckResult(
+                category="Cloud",
+                name="GCS Key File",
+                severity=Severity.FAIL,
+                message="Key file is not a valid GCS service account JSON",
+            )
+        project_id = data.get("project_id", "unknown")
+        return CheckResult(
+            category="Cloud",
+            name="GCS Key File",
+            severity=Severity.PASS,
+            message=f"Valid key for project: {project_id}",
+        )
+    except json.JSONDecodeError as e:
+        return CheckResult(
+            category="Cloud",
+            name="GCS Key File",
+            severity=Severity.FAIL,
+            message=f"Key file is not valid JSON: {e}",
+        )
+    except Exception as e:
+        return CheckResult(
+            category="Cloud",
+            name="GCS Key File",
+            severity=Severity.FAIL,
+            message=f"Error reading key file: {e}",
+        )
+
 
 def check_gcs_connectivity(bucket: str) -> CheckResult:
     """Check GCS bucket connectivity via rclone (read + write)."""
@@ -1139,6 +1204,23 @@ def run_preflight_checks(config: dict) -> PreflightReport:
 
     # Cloud
     if cloud.get("enabled", False):
+        # Validate GCS key file before connectivity check
+        from core.config_loader import load_config
+        try:
+            full_config = load_config(Path(__file__).parent.parent / "config.yaml")
+            gcs_key_path = None
+            # Try to get key path from credential manager
+            try:
+                import keyring
+                cred_name = config.get("cloud_credentials", {}).get("credential_name", "BackupAgent_GCS")
+                gcs_key_path = keyring.get_password("BackupAgent", cred_name)
+            except Exception:
+                pass
+            if gcs_key_path:
+                report.checks.append(check_gcs_key_path(gcs_key_path))
+        except Exception:
+            pass
+
         report.checks.append(check_gcs_connectivity(cloud.get("bucket", "")))
         report.checks.append(check_gcs_versioning(cloud.get("bucket", "")))
 

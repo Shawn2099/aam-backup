@@ -1,5 +1,6 @@
 """Tests for comprehensive pre-flight checks."""
 
+import json
 import socket
 import subprocess
 from pathlib import Path
@@ -24,6 +25,7 @@ from core.preflight import (
     check_smtp_config,
     check_vss_service,
     check_prefect_worker,
+    check_gcs_key_path,
     check_gcs_connectivity,
     check_gcs_versioning,
     check_rclone_version,
@@ -234,6 +236,20 @@ def test_check_lan_linux_ping_failure():
             assert result.severity == Severity.FAIL
 
 
+def test_check_lan_low_disk_space():
+    """check_lan_destination fails when disk space is below threshold."""
+    mock_usage = MagicMock()
+    mock_usage.free = 10 * 1024 ** 3  # 10GB
+    mock_usage.total = 1000 * 1024 ** 3  # 1TB
+
+    with patch("platform.system", return_value="Windows"):
+        with patch("pathlib.Path.exists", return_value=True):
+            with patch("shutil.disk_usage", return_value=mock_usage):
+                result = check_lan_destination("\\\\server\\share", "192.168.1.1", min_free_gb=50.0)
+                assert result.severity == Severity.FAIL
+                assert "Only 10.0GB free" in result.message
+
+
 def test_check_lan_dns_failure():
     """check_lan_destination fails when DNS resolution fails."""
     with patch("socket.gethostbyname", side_effect=socket.gaierror):
@@ -439,6 +455,54 @@ def test_check_gcs_no_bucket():
     result = check_gcs_connectivity("")
     assert result.severity == Severity.FAIL
     assert "No bucket" in result.message
+
+
+def test_check_gcs_key_path_valid(tmp_path):
+    """check_gcs_key_path passes for valid service account JSON."""
+    key_file = tmp_path / "gcs_key.json"
+    key_file.write_text(json.dumps({
+        "type": "service_account",
+        "project_id": "test-project",
+        "private_key_id": "key123",
+    }))
+    result = check_gcs_key_path(str(key_file))
+    assert result.severity == Severity.PASS
+    assert "test-project" in result.message
+
+
+def test_check_gcs_key_path_missing():
+    """check_gcs_key_path fails when path is empty."""
+    result = check_gcs_key_path("")
+    assert result.severity == Severity.FAIL
+    assert "not configured" in result.message
+
+
+def test_check_gcs_key_path_file_not_found():
+    """check_gcs_key_path fails when file doesn't exist."""
+    result = check_gcs_key_path("/nonexistent/key.json")
+    assert result.severity == Severity.FAIL
+    assert "not found" in result.message
+
+
+def test_check_gcs_key_path_invalid_json(tmp_path):
+    """check_gcs_key_path fails for invalid JSON."""
+    key_file = tmp_path / "bad_key.json"
+    key_file.write_text("not valid json")
+    result = check_gcs_key_path(str(key_file))
+    assert result.severity == Severity.FAIL
+    assert "not valid JSON" in result.message
+
+
+def test_check_gcs_key_path_wrong_type(tmp_path):
+    """check_gcs_key_path fails when type is not service_account."""
+    key_file = tmp_path / "wrong_key.json"
+    key_file.write_text(json.dumps({
+        "type": "authorized_user",
+        "project_id": "test-project",
+    }))
+    result = check_gcs_key_path(str(key_file))
+    assert result.severity == Severity.FAIL
+    assert "not a valid GCS service account" in result.message
 
 
 def test_check_gcs_success():
