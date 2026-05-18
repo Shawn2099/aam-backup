@@ -1,6 +1,7 @@
 """Prefect task: backup manifest.db to LAN and cloud destinations."""
 
 import shutil
+import subprocess
 from pathlib import Path
 
 from prefect import task
@@ -14,19 +15,31 @@ from prefect.logging import get_run_logger
     retry_delay_seconds=30,
     task_run_name="backup-manifest-db",
 )
-def backup_manifest_db_task(database_path: str, lan_destination: str, cloud_enabled: bool = False) -> dict:
-    """Copy manifest.db to LAN destination and optionally cloud.
+def backup_manifest_db_task(
+    database_path: str,
+    lan_destination: str,
+    cloud_enabled: bool = False,
+    gcs_key_path: str = None,
+    bucket: str = None,
+    remote_path: str = None,
+    gcs_location: str = None,
+) -> dict:
+    """Copy manifest.db to LAN and cloud destinations.
 
-    This protects against manifest corruption — if the local DB is lost,
-    a recent copy exists on backup destinations.
+    BUG FIX #5: Actually backs up manifest.db to cloud via rclone,
+    not just relying on next sync (which excludes BackupAgent folder).
 
     Args:
         database_path: Path to the local manifest.db.
         lan_destination: UNC path to LAN backup destination.
-        cloud_enabled: Whether to also copy to cloud (handled by rclone sync).
+        cloud_enabled: Whether to also copy to cloud.
+        gcs_key_path: Path to GCS service account JSON key.
+        bucket: GCS bucket name.
+        remote_path: GCS remote path prefix.
+        gcs_location: GCS region.
 
     Returns:
-        Result dict with backup status.
+        Result dict with backup status for each destination.
     """
     logger = get_run_logger()
     db_path = Path(database_path)
@@ -52,12 +65,75 @@ def backup_manifest_db_task(database_path: str, lan_destination: str, cloud_enab
         results["lan"] = "FAILED"
         logger.error(f"Failed to backup manifest.db to LAN: {e}")
 
-    # Cloud backup is handled by rclone sync — manifest.db is excluded
-    # from backup scope in config.yaml, so we don't copy it to cloud here.
-    # If cloud_enabled, the next rclone sync will pick it up if we place
-    # it in a location that's included in the backup scope.
-    if cloud_enabled:
-        results["cloud"] = "INCLUDED_IN_NEXT_SYNC"
-        logger.info("manifest.db will be included in next cloud sync")
+    # BUG FIX #5: Actually copy manifest.db to cloud via rclone
+    if cloud_enabled and gcs_key_path and bucket and remote_path:
+        try:
+            import tempfile
+            import platform
+
+            # Write temp rclone config
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".conf", delete=False
+            ) as f:
+                f.write(
+                    "[gcs_backup]\n"
+                    "type = google cloud storage\n"
+                    f"service_account_file = {gcs_key_path}\n"
+                    "bucket_policy_only = true\n"
+                    f"location = {gcs_location}\n"
+                )
+                temp_config = Path(f.name)
+
+            try:
+                # Set restricted ACL on Windows
+                if platform.system().lower() == "windows":
+                    try:
+                        subprocess.run(
+                            ["icacls", str(temp_config), "/inheritance:r"],
+                            capture_output=True,
+                            check=True,
+                        )
+                    except subprocess.CalledProcessError:
+                        pass
+
+                remote = f"gcs_backup:{bucket}/{remote_path}"
+                cmd = [
+                    "rclone", "copyto",
+                    str(db_path),
+                    f"{remote}/manifest.db",
+                    "--config", str(temp_config),
+                    "--log-level", "INFO",
+                ]
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+
+                if result.returncode == 0:
+                    results["cloud"] = "SUCCESS"
+                    logger.info(f"manifest.db backed up to cloud: {remote}/manifest.db")
+                else:
+                    results["cloud"] = "FAILED"
+                    logger.error(f"Rclone copy failed: {result.stderr.strip()}")
+
+            finally:
+                if temp_config.exists():
+                    try:
+                        temp_config.unlink()
+                    except OSError:
+                        pass
+
+        except subprocess.TimeoutExpired:
+            results["cloud"] = "FAILED"
+            logger.error("Rclone copy timed out")
+        except FileNotFoundError:
+            results["cloud"] = "FAILED"
+            logger.error("rclone not found in PATH")
+        except Exception as e:
+            results["cloud"] = "FAILED"
+            logger.error(f"Failed to backup manifest.db to cloud: {e}")
 
     return results

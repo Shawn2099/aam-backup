@@ -78,10 +78,69 @@ def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
             server.sendmail(notif.sender, notif.recipients, msg.as_string())
 
     except Exception as e:
-        # Log but don't fail the hook — email is best-effort
         try:
             logger = get_run_logger()
             logger.error(f"Failed to send failure email: {e}")
+        except Exception:
+            pass
+
+
+def _send_success_email(config_path: str, flow_run_id: str, status: str, duration: float):
+    """Send success notification email using SMTP config from config.yaml."""
+    try:
+        config = load_config(config_path)
+        notif = config.notifications
+
+        if not notif.smtp_host or not notif.sender or not notif.recipients:
+            return
+
+        smtp_password = keyring.get_password("BackupAgent", notif.smtp_password_credential)
+        if not smtp_password:
+            return
+
+        hours = int(duration // 3600)
+        minutes = int((duration % 3600) // 60)
+        seconds = int(duration % 60)
+        duration_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"✅ Backup Complete — {config.firm.name}"
+        msg["From"] = notif.sender
+        msg["To"] = ", ".join(notif.recipients)
+
+        body_text = (
+            f"Backup Success Notification\n"
+            f"{'=' * 40}\n\n"
+            f"Firm: {config.firm.name}\n"
+            f"Flow Run ID: {flow_run_id}\n"
+            f"Status: {status}\n"
+            f"Duration: {duration_str}\n"
+        )
+
+        body_html = f"""
+        <html><body>
+        <h2 style="color: green;">Backup Success Notification</h2>
+        <table>
+            <tr><td><strong>Firm:</strong></td><td>{config.firm.name}</td></tr>
+            <tr><td><strong>Flow Run ID:</strong></td><td>{flow_run_id}</td></tr>
+            <tr><td><strong>Status:</strong></td><td>{status}</td></tr>
+            <tr><td><strong>Duration:</strong></td><td>{duration_str}</td></tr>
+        </table>
+        </body></html>
+        """
+
+        msg.attach(MIMEText(body_text, "plain"))
+        msg.attach(MIMEText(body_html, "html"))
+
+        with smtplib.SMTP(notif.smtp_host, notif.smtp_port) as server:
+            server.starttls()
+            server.login(notif.smtp_username, smtp_password)
+            server.sendmail(notif.sender, notif.recipients, msg.as_string())
+
+    except Exception as e:
+        try:
+            logger = get_run_logger()
+            logger.error(f"Failed to send success email: {e}")
         except Exception:
             pass
 
@@ -105,6 +164,16 @@ def _on_backup_completion(flow_obj, flow_run, state):
     logger = get_run_logger()
     logger.info(f"Backup flow completed successfully. Run ID: {flow_run.id}")
 
+    config_path = flow_run.parameters.get("config_path", "config.yaml")
+    config = load_config(config_path)
+
+    if config.notifications.send_on_every_run:
+        try:
+            duration = flow_run.total_run_time or 0
+            _send_success_email(config_path, str(flow_run.id), "COMPLETE", duration)
+        except Exception as e:
+            logger.error(f"Failed to send success email: {e}")
+
 
 @flow(
     name="nightly-backup",
@@ -123,10 +192,12 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
     Flow:
     1. Load and validate configuration
-    2. Run pre-flight checks
-    3. Scan source drive for changes
-    4. If changes detected: run LAN and cloud backup concurrently
-    5. Compute overall status
+    2. Create VSS snapshot if enabled
+    3. Run pre-flight checks
+    4. Scan source drive for changes
+    5. If changes detected: run LAN and cloud backup concurrently
+    6. Post-backup: manifest backup, integrity check, log sync, metrics
+    7. Clean up VSS snapshot (always, even on failure)
 
     Args:
         config_path: Path to config.yaml. Defaults to "config.yaml".
@@ -136,34 +207,34 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
     """
     logger = get_run_logger()
 
-    # Start timer for metrics
     start_time = time.time()
 
-    # Configure logging
     log_dir = Path(os.environ.get("BACKUP_LOG_DIR", "logs"))
     configure_logging(log_dir)
 
-    # Task 1: Load configuration
-    config, gcs_key_path = load_config_task(config_path)
-
-    # Task 1b: Version config before run
-    try:
-        version_config_task(config_path, config.paths.log_directory)
-    except Exception as e:
-        logger.warning(f"Config versioning failed (non-critical): {e}")
-
-    # Task 1c: Create VSS snapshot if enabled
-    vss_result = None
+    # Track VSS state for cleanup (must survive exceptions)
+    vss_enabled = False
     vss_device_path = None
+
     try:
+        # Task 1: Load configuration
+        config, gcs_key_path = load_config_task(config_path)
+
+        # Task 1b: Version config before run
+        try:
+            version_config_task(config_path, config.paths.log_directory)
+        except Exception as e:
+            logger.warning(f"Config versioning failed (non-critical): {e}")
+
+        # Task 1c: Create VSS snapshot if enabled
         if config.vss.enabled:
             vss_result = create_vss_snapshot_task(
                 config.vss.drive_letter,
                 config.vss.fallback_on_failure,
             )
             vss_device_path = vss_result.get("device_path")
-            if vss_result.get("vss_enabled"):
-                # Override source drive with shadow copy path
+            vss_enabled = vss_result.get("vss_enabled", False)
+            if vss_enabled:
                 config = config.model_copy(
                     update={
                         "paths": config.paths.model_copy(
@@ -174,172 +245,184 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 logger.info(f"Using VSS shadow copy as source: {vss_result['source_path']}")
             else:
                 logger.info("Using direct source drive (VSS not used)")
-    except Exception as e:
-        logger.warning(f"VSS snapshot failed (non-critical): {e}")
 
-    # Task 2: Pre-flight checks
-    preflight_result = preflight_task(config.model_dump())
-    config_dict = preflight_result["config"]
-    # Rebuild config from dict (preflight may have validated/normalized values)
-    from models.config_model import AppConfig
-    config = AppConfig(**config_dict)
+        # Task 2: Pre-flight checks
+        preflight_result = preflight_task(config.model_dump())
+        config_dict = preflight_result["config"]
 
-    # Task 3: Scan drive
-    scan_result = scan_task(config, config.paths.database_path)
+        # Rebuild config from preflight output
+        from models.config_model import AppConfig
+        config = AppConfig(**config_dict)
 
-    logger.info(
-        f"Scan complete: {len(scan_result.new_files)} new, "
-        f"{len(scan_result.modified_files)} modified, "
-        f"{len(scan_result.deleted_files)} deleted, "
-        f"{scan_result.unchanged_count} unchanged"
-    )
-
-    if not scan_result.has_changes:
-        logger.info("No changes detected — backup complete")
-
-        # Check for extended "no changes" period
-        threshold = config.alerts.no_changes_warning_days
-        if threshold > 0:
-            from datetime import datetime, timezone, timedelta
-            cutoff = datetime.now(timezone.utc) - timedelta(days=threshold)
-            cutoff_iso = cutoff.isoformat()
-
-            # Check if any file was recently backed up
-            db = ManifestDB(config.paths.database_path)
-            try:
-                all_entries = db.get_all_entries()
-                recent_backup = any(
-                    (e.last_backed_up_lan or "") > cutoff_iso or
-                    (e.last_backed_up_cloud or "") > cutoff_iso
-                    for e in all_entries.values()
-                )
-                if not recent_backup and all_entries:
-                    logger.warning(
-                        f"No file changes detected in {threshold}+ days. "
-                        f"Scanner may be misconfigured or source drive unchanged. "
-                        f"Total files in manifest: {len(all_entries)}"
+        # BUG FIX #1: Re-apply VSS source path after preflight rebuilds config
+        if vss_enabled and vss_device_path:
+            config = config.model_copy(
+                update={
+                    "paths": config.paths.model_copy(
+                        update={"source_drive": vss_device_path}
                     )
-            finally:
-                db.close()
+                }
+            )
 
-        return "COMPLETE"
+        # Task 3: Scan drive
+        scan_result = scan_task(config, config.paths.database_path)
 
-    # Tasks 4 & 5: Concurrent LAN and cloud backup
-    lan_future = lan_backup_task.submit(config, scan_result, config.paths.database_path)
-    cloud_future = cloud_backup_task.submit(
-        config, gcs_key_path, scan_result, config.paths.database_path
-    )
-
-    lan_result = lan_future.result()
-    cloud_result = cloud_future.result()
-
-    # Compute overall status
-    lan_status = lan_result.get("status", "LAN_FAILED")
-    cloud_status = cloud_result.get("status", "CLOUD_FAILED")
-
-    if lan_status in ("LAN_COMPLETE", "LAN_PARTIAL") and cloud_status in (
-        "CLOUD_COMPLETE",
-        "CLOUD_PARTIAL",
-    ):
-        overall = "COMPLETE"
-    elif lan_status == "LAN_SKIPPED" and cloud_status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
-        overall = "COMPLETE"
-    elif cloud_status == "CLOUD_SKIPPED" and lan_status in ("LAN_COMPLETE", "LAN_PARTIAL"):
-        overall = "COMPLETE"
-    elif lan_status in ("LAN_COMPLETE", "LAN_PARTIAL", "LAN_SKIPPED") or cloud_status in (
-        "CLOUD_COMPLETE",
-        "CLOUD_PARTIAL",
-        "CLOUD_SKIPPED",
-    ):
-        overall = "PARTIAL_FAILURE"
-    else:
-        overall = "FAILED"
-
-    logger.info(
-        f"Backup complete — LAN: {lan_status}, Cloud: {cloud_status}, Overall: {overall}"
-    )
-
-    if overall == "FAILED":
-        raise RuntimeError(f"Both backup destinations failed: LAN={lan_status}, Cloud={cloud_status}")
-
-    # Backup manifest.db after successful backup
-    try:
-        backup_manifest_db_task(
-            config.paths.database_path,
-            config.paths.lan_destination,
-            config.cloud_backup.enabled,
+        logger.info(
+            f"Scan complete: {len(scan_result.new_files)} new, "
+            f"{len(scan_result.modified_files)} modified, "
+            f"{len(scan_result.deleted_files)} deleted, "
+            f"{scan_result.unchanged_count} unchanged"
         )
-    except Exception as e:
-        logger.warning(f"manifest.db backup failed (non-critical): {e}")
 
-    # Verify cloud integrity after successful cloud backup
-    cloud_mismatches = 0
-    cloud_missing = 0
-    if cloud_status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
+        if not scan_result.has_changes:
+            logger.info("No changes detected — backup complete")
+
+            threshold = config.alerts.no_changes_warning_days
+            if threshold > 0:
+                from datetime import datetime, timezone, timedelta
+                cutoff = datetime.now(timezone.utc) - timedelta(days=threshold)
+                cutoff_iso = cutoff.isoformat()
+
+                db = ManifestDB(config.paths.database_path)
+                try:
+                    all_entries = db.get_all_entries()
+                    recent_backup = any(
+                        (e.last_backed_up_lan or "") > cutoff_iso or
+                        (e.last_backed_up_cloud or "") > cutoff_iso
+                        for e in all_entries.values()
+                    )
+                    if not recent_backup and all_entries:
+                        logger.warning(
+                            f"No file changes detected in {threshold}+ days. "
+                            f"Scanner may be misconfigured or source drive unchanged. "
+                            f"Total files in manifest: {len(all_entries)}"
+                        )
+                finally:
+                    db.close()
+
+            return "COMPLETE"
+
+        # Tasks 4 & 5: Concurrent LAN and cloud backup
+        lan_future = lan_backup_task.submit(config, scan_result, config.paths.database_path)
+        cloud_future = cloud_backup_task.submit(
+            config, gcs_key_path, scan_result, config.paths.database_path
+        )
+
+        lan_result = lan_future.result()
+        cloud_result = cloud_future.result()
+
+        # Compute overall status
+        lan_status = lan_result.get("status", "LAN_FAILED")
+        cloud_status = cloud_result.get("status", "CLOUD_FAILED")
+
+        if lan_status in ("LAN_COMPLETE", "LAN_PARTIAL") and cloud_status in (
+            "CLOUD_COMPLETE",
+            "CLOUD_PARTIAL",
+        ):
+            overall = "COMPLETE"
+        elif lan_status == "LAN_SKIPPED" and cloud_status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
+            overall = "COMPLETE"
+        elif cloud_status == "CLOUD_SKIPPED" and lan_status in ("LAN_COMPLETE", "LAN_PARTIAL"):
+            overall = "COMPLETE"
+        elif lan_status in ("LAN_COMPLETE", "LAN_PARTIAL", "LAN_SKIPPED") or cloud_status in (
+            "CLOUD_COMPLETE",
+            "CLOUD_PARTIAL",
+            "CLOUD_SKIPPED",
+        ):
+            overall = "PARTIAL_FAILURE"
+        else:
+            overall = "FAILED"
+
+        logger.info(
+            f"Backup complete — LAN: {lan_status}, Cloud: {cloud_status}, Overall: {overall}"
+        )
+
+        if overall == "FAILED":
+            raise RuntimeError(f"Both backup destinations failed: LAN={lan_status}, Cloud={cloud_status}")
+
+        # BUG FIX #5: Backup manifest.db to both LAN and cloud
         try:
-            verify_result = verify_cloud_integrity_task(config, gcs_key_path)
-            cloud_mismatches = verify_result.get("mismatches", 0)
-            cloud_missing = verify_result.get("missing", 0)
-            if verify_result.get("status") == "MISMATCH":
-                logger.warning(
-                    f"Cloud integrity check found mismatches: "
-                    f"{cloud_mismatches} mismatches, "
-                    f"{cloud_missing} missing"
-                )
-            else:
-                logger.info(f"Cloud integrity check passed: {verify_result.get('matches', 0)} files verified")
+            backup_manifest_db_task(
+                config.paths.database_path,
+                config.paths.lan_destination,
+                config.cloud_backup.enabled,
+                gcs_key_path,
+                config.cloud_backup.bucket,
+                config.cloud_backup.remote_path,
+                config.cloud_backup.gcs_location,
+            )
         except Exception as e:
-            logger.warning(f"Cloud integrity verification failed (non-critical): {e}")
+            logger.warning(f"manifest.db backup failed (non-critical): {e}")
 
-    # Sync log files to cloud for disaster recovery
-    try:
-        backup_logs_cloud_task(
-            config.paths.log_directory,
-            gcs_key_path,
-            config.cloud_backup.enabled,
-            config.cloud_backup.bucket,
-            config.cloud_backup.remote_path,
-            config.cloud_backup.gcs_location,
-        )
-    except Exception as e:
-        logger.warning(f"Log backup to cloud failed (non-critical): {e}")
+        # Verify cloud integrity after successful cloud backup
+        cloud_mismatches = 0
+        cloud_missing = 0
+        if cloud_status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
+            try:
+                verify_result = verify_cloud_integrity_task(config, gcs_key_path)
+                cloud_mismatches = verify_result.get("mismatches", 0)
+                cloud_missing = verify_result.get("missing", 0)
+                if verify_result.get("status") == "MISMATCH":
+                    logger.warning(
+                        f"Cloud integrity check found mismatches: "
+                        f"{cloud_mismatches} mismatches, "
+                        f"{cloud_missing} missing"
+                    )
+                else:
+                    logger.info(f"Cloud integrity check passed: {verify_result.get('matches', 0)} files verified")
+            except Exception as e:
+                logger.warning(f"Cloud integrity verification failed (non-critical): {e}")
 
-    # Collect metrics for trend analysis
-    try:
-        duration = time.time() - start_time
-        from prefect.context import get_run_context
-        ctx = get_run_context()
-        flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
-
-        collect_metrics_task(
-            log_directory=config.paths.log_directory,
-            flow_run_id=flow_run_id,
-            overall_status=overall,
-            lan_status=lan_status,
-            cloud_status=cloud_status,
-            scan_new=len(scan_result.new_files),
-            scan_modified=len(scan_result.modified_files),
-            scan_deleted=len(scan_result.deleted_files),
-            scan_unchanged=scan_result.unchanged_count,
-            lan_files_copied=lan_result.get("files_copied", 0),
-            lan_bytes_copied=lan_result.get("bytes_copied", 0),
-            lan_files_failed=lan_result.get("files_failed", 0),
-            cloud_mismatches=cloud_mismatches,
-            cloud_missing=cloud_missing,
-            duration_seconds=round(duration, 1),
-        )
-    except Exception as e:
-        logger.warning(f"Metrics collection failed (non-critical): {e}")
-
-    # Clean up VSS snapshot
-    if vss_device_path:
+        # Sync log files to cloud for disaster recovery
         try:
-            delete_vss_snapshot_task(vss_device_path)
-            logger.info("VSS shadow copy deleted")
+            backup_logs_cloud_task(
+                config.paths.log_directory,
+                gcs_key_path,
+                config.cloud_backup.enabled,
+                config.cloud_backup.bucket,
+                config.cloud_backup.remote_path,
+                config.cloud_backup.gcs_location,
+            )
         except Exception as e:
-            logger.warning(f"VSS cleanup failed: {e}")
+            logger.warning(f"Log backup to cloud failed (non-critical): {e}")
 
-    return overall
+        # Collect metrics for trend analysis
+        try:
+            duration = time.time() - start_time
+            from prefect.context import get_run_context
+            ctx = get_run_context()
+            flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
+
+            collect_metrics_task(
+                log_directory=config.paths.log_directory,
+                flow_run_id=flow_run_id,
+                overall_status=overall,
+                lan_status=lan_status,
+                cloud_status=cloud_status,
+                scan_new=len(scan_result.new_files),
+                scan_modified=len(scan_result.modified_files),
+                scan_deleted=len(scan_result.deleted_files),
+                scan_unchanged=scan_result.unchanged_count,
+                lan_files_copied=lan_result.get("files_copied", 0),
+                lan_bytes_copied=lan_result.get("bytes_copied", 0),
+                lan_files_failed=lan_result.get("files_failed", 0),
+                cloud_mismatches=cloud_mismatches,
+                cloud_missing=cloud_missing,
+                duration_seconds=round(duration, 1),
+            )
+        except Exception as e:
+            logger.warning(f"Metrics collection failed (non-critical): {e}")
+
+        return overall
+
+    finally:
+        # BUG FIX #2 & #3: Always clean up VSS snapshot, even on failure or retry
+        if vss_device_path:
+            try:
+                delete_vss_snapshot_task(vss_device_path)
+                logger.info("VSS shadow copy deleted")
+            except Exception as e:
+                logger.warning(f"VSS cleanup failed: {e}")
 
 
 if __name__ == "__main__":
