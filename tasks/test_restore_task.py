@@ -24,10 +24,10 @@ def test_restore_task(
     source_drive: str,
     lan_destination: str,
     cloud_enabled: bool = False,
-    gcs_key_path: str = None,
-    cloud_bucket: str = None,
-    cloud_remote_path: str = None,
-    gcs_location: str = None,
+    gcs_key_path: str | None = None,
+    cloud_bucket: str | None = None,
+    cloud_remote_path: str | None = None,
+    gcs_location: str | None = None,
     sample_count: int = 10,
 ) -> dict:
     """Pick random files from manifest and verify they exist on LAN and GCS.
@@ -88,14 +88,14 @@ def test_restore_task(
 
     for relative_path, entry in sampled:
         # Verify on LAN
-        lan_result = _verify_lan_file(lan_destination, relative_path, entry.file_size)
+        lan_result = _verify_lan_file(lan_destination, relative_path, int(entry.file_size))  # type: ignore[arg-type]
         lan_results.append(lan_result)
 
         # Verify on cloud
-        if cloud_enabled and gcs_key_path and cloud_bucket and cloud_remote_path:
+        if cloud_enabled and gcs_key_path and cloud_bucket and cloud_remote_path and gcs_location:
             cloud_result = _verify_cloud_file(
                 gcs_key_path, gcs_location, cloud_bucket, cloud_remote_path,
-                relative_path, entry.file_size,
+                relative_path, int(entry.file_size),  # type: ignore[arg-type]
             )
             cloud_results.append(cloud_result)
 
@@ -103,8 +103,8 @@ def test_restore_task(
     lan_ok = sum(1 for r in lan_results if r["status"] == "OK")
     lan_fail = sum(1 for r in lan_results if r["status"] != "OK")
 
-    cloud_ok = sum(1 for r in cloud_results if r["status"] == "OK") if cloud_results else None
-    cloud_fail = sum(1 for r in cloud_results if r["status"] != "OK") if cloud_results else None
+    cloud_ok = sum(1 for r in cloud_results if r["status"] == "OK") if cloud_results else 0
+    cloud_fail = sum(1 for r in cloud_results if r["status"] != "OK") if cloud_results else 0
 
     lan_status = "OK" if lan_fail == 0 else "PARTIAL" if lan_ok > 0 else "FAILED"
     cloud_status = None

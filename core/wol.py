@@ -34,8 +34,14 @@ def ping_host(ip: str, timeout: int = 5) -> bool:
     Returns:
         True if host responds to ping.
     """
-    param = "-n" if platform.system().lower() == "windows" else "-c"
-    command = ["ping", param, "1", "-W", str(timeout), ip]
+    is_windows = platform.system().lower() == "windows"
+    param = "-n" if is_windows else "-c"
+    
+    # Windows ping timeout (-w) is in milliseconds, Linux (-W) is in seconds
+    if is_windows:
+        command = ["ping", param, "1", "-w", str(timeout * 1000), ip]
+    else:
+        command = ["ping", param, "1", "-W", str(timeout), ip]
 
     try:
         result = subprocess.run(

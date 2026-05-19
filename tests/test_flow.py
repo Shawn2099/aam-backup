@@ -103,3 +103,109 @@ def test_config_task_raises_on_invalid_config(temp_dir):
 
     with pytest.raises(ConfigurationError):
         load_config_task.fn(str(bad_path))
+
+
+def test_send_failure_email_fallback(temp_dir):
+    """Test _send_failure_email fallback when block load fails."""
+    # Write custom config with notifications
+    config = {
+        "firm": {"name": "Test Firm"},
+        "paths": {
+            "source_drive": str(temp_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(temp_dir / "logs"),
+            "database_path": str(temp_dir / "manifest.db"),
+        },
+        "wol": {"enabled": False},
+        "cloud_backup": {"enabled": False},
+        "notifications": {
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 587,
+            "smtp_username": "smtp_user",
+            "smtp_password_credential": "smtp_password",
+            "sender": "sender@example.com",
+            "recipients": ["admin@example.com"],
+        }
+    }
+    config_path = temp_dir / "config.yaml"
+    with open(config_path, "w") as f:
+        import yaml
+        yaml.dump(config, f)
+
+    from flow import _send_failure_email
+    
+    with patch("keyring.get_password", return_value="dummy_pass"), \
+         patch("prefect_email.EmailServerCredentials.load", side_effect=Exception("block not found")), \
+         patch("prefect_email.email_send_message.fn") as mock_send_message:
+        
+        _send_failure_email(str(config_path), "test-flow-id", "test error message")
+        
+        # Verify call arguments
+        mock_send_message.assert_called_once()
+        kwargs = mock_send_message.call_args[1]
+        assert "Backup Failed" in kwargs["subject"]
+        assert kwargs["email_from"] == "sender@example.com"
+        assert kwargs["email_to"] == ["admin@example.com"]
+        assert "test error message" in kwargs["msg_plain"]
+        
+        # Verify dynamic block was instantiated correctly
+        creds = kwargs["email_server_credentials"]
+        assert creds.username == "smtp_user"
+        assert creds.smtp_server == "smtp.example.com"
+        assert creds.smtp_port == 587
+        assert creds.smtp_type == "STARTTLS" or getattr(creds.smtp_type, "name", None) == "STARTTLS"
+
+
+def test_send_success_email_block_success(temp_dir):
+    """Test _send_success_email using Prefect block when it exists."""
+    config = {
+        "firm": {"name": "Test Firm"},
+        "paths": {
+            "source_drive": str(temp_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(temp_dir / "logs"),
+            "database_path": str(temp_dir / "manifest.db"),
+        },
+        "wol": {"enabled": False},
+        "cloud_backup": {"enabled": False},
+        "notifications": {
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 587,
+            "smtp_username": "smtp_user",
+            "smtp_password_credential": "smtp_password",
+            "sender": "sender@example.com",
+            "recipients": ["admin@example.com"],
+        }
+    }
+    config_path = temp_dir / "config.yaml"
+    with open(config_path, "w") as f:
+        import yaml
+        yaml.dump(config, f)
+
+    from flow import _send_success_email
+    from prefect_email import EmailServerCredentials
+    
+    mock_block = EmailServerCredentials(
+        username="block_user",
+        password="block_password",
+        smtp_server="smtp.block.com",
+        smtp_port=465,
+        smtp_type="SSL",
+    )
+    
+    with patch("keyring.get_password", return_value="dummy_pass"), \
+         patch("prefect_email.EmailServerCredentials.load", return_value=mock_block), \
+         patch("prefect_email.email_send_message.fn") as mock_send_message:
+        
+        _send_success_email(str(config_path), "test-flow-id", "COMPLETE", 3661.0)
+        
+        # Verify call arguments
+        mock_send_message.assert_called_once()
+        kwargs = mock_send_message.call_args[1]
+        assert "Backup Complete" in kwargs["subject"]
+        assert kwargs["email_from"] == "sender@example.com"
+        assert kwargs["email_to"] == ["admin@example.com"]
+        assert "1h 1m 1s" in kwargs["msg_plain"]
+        
+        # Verify block was loaded and passed
+        assert kwargs["email_server_credentials"] is mock_block

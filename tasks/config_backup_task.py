@@ -19,10 +19,10 @@ def backup_config_task(
     config_path: str,
     lan_destination: str,
     cloud_enabled: bool = False,
-    gcs_key_path: str = None,
-    cloud_bucket: str = None,
-    cloud_remote_path: str = None,
-    gcs_location: str = None,
+    gcs_key_path: str | None = None,
+    cloud_bucket: str | None = None,
+    cloud_remote_path: str | None = None,
+    gcs_location: str | None = None,
 ) -> dict:
     """Copy config.yaml to LAN and cloud destinations for DR recovery.
 

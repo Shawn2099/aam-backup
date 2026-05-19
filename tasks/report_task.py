@@ -17,7 +17,7 @@ from prefect.logging import get_run_logger
 def generate_report_task(
     log_directory: str,
     report_type: str = "weekly",
-    smtp_config: dict = None,
+    smtp_config: dict | None = None,
 ) -> dict:
     """Generate weekly or monthly backup report from metrics JSONL.
 

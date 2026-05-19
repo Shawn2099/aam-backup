@@ -8,8 +8,8 @@ from core.verify import (
     verify_cloud_checksums,
     run_dry_run_lan,
     run_dry_run_cloud,
-    _compute_file_checksum,
 )
+from core.hashing import compute_checksum
 from models.scan_result import FileInfo, ScanResult
 
 
@@ -17,8 +17,8 @@ class TestComputeChecksum:
     def test_checksum_is_consistent(self, tmp_path):
         f = tmp_path / "test.txt"
         f.write_bytes(b"hello world")
-        h1 = _compute_file_checksum(f)
-        h2 = _compute_file_checksum(f)
+        h1 = compute_checksum(f)
+        h2 = compute_checksum(f)
         assert h1 == h2
 
     def test_checksum_differs_for_different_content(self, tmp_path):
@@ -26,12 +26,12 @@ class TestComputeChecksum:
         f2 = tmp_path / "b.txt"
         f1.write_bytes(b"hello")
         f2.write_bytes(b"world")
-        assert _compute_file_checksum(f1) != _compute_file_checksum(f2)
+        assert compute_checksum(f1) != compute_checksum(f2)
 
     def test_checksum_is_hex_string(self, tmp_path):
         f = tmp_path / "test.txt"
         f.write_bytes(b"test")
-        h = _compute_file_checksum(f)
+        h = compute_checksum(f)
         assert len(h) == 16
         int(h, 16)  # Valid hex
 

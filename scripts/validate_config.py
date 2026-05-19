@@ -88,7 +88,7 @@ def check_binaries() -> list[str]:
 
 def check_paths(config: dict) -> list[str]:
     """Validate path formats."""
-    errors = []
+    errors: list[str] = []
     source = config.get("paths", {}).get("source_drive", "")
     if source and sys.platform == "win32":
         if not (len(source) == 3 and source[1] == ":" and source[2] == "\\"):
@@ -98,7 +98,7 @@ def check_paths(config: dict) -> list[str]:
 
 def check_lan_connectivity(config: dict) -> list[str]:
     """Test connectivity to LAN destination."""
-    errors = []
+    errors: list[str] = []
     lan = config.get("lan_backup", {})
     wol = config.get("wol", {})
 

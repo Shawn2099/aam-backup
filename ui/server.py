@@ -103,9 +103,9 @@ async def index(request: Request):
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Get last flow run
-            resp = await client.get(
-                f"{prefect_api_url}/flow_runs",
-                params={
+            resp = await client.post(
+                f"{prefect_api_url}/flow_runs/filter",
+                json={
                     "flow_runs": {"flow": {"name": {"any_": ["nightly-backup"]}}},
                     "sort": "START_TIME_DESC",
                     "limit": 1,
@@ -118,9 +118,9 @@ async def index(request: Request):
                     in_progress = last_run.get("state_name") == "Running"
 
             # Get deployment schedule
-            resp = await client.get(
-                f"{prefect_api_url}/deployments",
-                params={
+            resp = await client.post(
+                f"{prefect_api_url}/deployments/filter",
+                json={
                     "deployments": {"name": {"any_": ["nightly-backup-production"]}},
                 },
             )
@@ -159,9 +159,9 @@ async def trigger_backup():
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             # Get deployment ID
-            resp = await client.get(
-                f"{prefect_api_url}/deployments",
-                params={
+            resp = await client.post(
+                f"{prefect_api_url}/deployments/filter",
+                json={
                     "deployments": {"name": {"any_": ["nightly-backup-production"]}},
                 },
             )

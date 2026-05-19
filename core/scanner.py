@@ -3,32 +3,10 @@
 import os
 from pathlib import Path
 
-import xxhash
-
+from core.hashing import compute_checksum
 from core.manifest_db import ManifestDB
 from models.config_model import AppConfig
 from models.scan_result import FileInfo, ScanResult
-
-
-def compute_checksum(file_path: Path) -> str:
-    """Compute xxHash64 checksum for a file.
-
-    Reads in 8MB chunks to avoid loading large files into memory.
-
-    Args:
-        file_path: Path to the file.
-
-    Returns:
-        16-character hex string.
-    """
-    h = xxhash.xxh64()
-    with open(file_path, "rb") as f:
-        while True:
-            chunk = f.read(8 * 1024 * 1024)  # 8MB
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def is_excluded_folder(folder_path: Path, exclude_folders: list[str]) -> bool:
@@ -185,7 +163,9 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                     checksum="pending",
                 )
                 # Update cache so subsequent scans in same run see it
-                manifest_cache[relative_path] = db.get_entry(relative_path)
+                new_entry = db.get_entry(relative_path)
+                if new_entry:
+                    manifest_cache[relative_path] = new_entry
 
             else:
                 # Step 7b/7c: Check size and mtime (1.0 second tolerance)
@@ -234,7 +214,8 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
     # Compute totals for capacity tracking
     result.total_file_count = len(current_paths)
     result.total_source_bytes = sum(
-        entry.file_size for entry in manifest_cache.values()
+        int(entry.file_size)  # type: ignore[misc, arg-type]
+        for entry in manifest_cache.values()
         if entry.relative_path in current_paths
     )
 

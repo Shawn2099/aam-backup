@@ -9,6 +9,7 @@ from pathlib import Path
 from loguru import logger
 
 from core.manifest_db import ManifestDB
+from core.hashing import compute_checksum
 from models.config_model import AppConfig
 from models.scan_result import ScanResult
 
@@ -239,7 +240,7 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
                 if entry and entry.checksum == "pending":
                     try:
                         full_path = Path(paths_config.source_drive) / file_info.relative_path
-                        checksum = _compute_file_checksum(full_path)
+                        checksum = compute_checksum(full_path)
                         db.upsert_entry(
                             relative_path=file_info.relative_path,
                             file_size=file_info.file_size,
@@ -268,21 +269,3 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
                 pass
 
 
-def _compute_file_checksum(file_path: Path) -> str:
-    """Compute xxHash64 for a single file.
-
-    Args:
-        file_path: Path to the file.
-
-    Returns:
-        16-character hex string.
-    """
-    import xxhash
-    h = xxhash.xxh64()
-    with open(file_path, "rb") as f:
-        while True:
-            chunk = f.read(8 * 1024 * 1024)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()

@@ -19,10 +19,10 @@ def backup_manifest_db_task(
     database_path: str,
     lan_destination: str,
     cloud_enabled: bool = False,
-    gcs_key_path: str = None,
-    bucket: str = None,
-    remote_path: str = None,
-    gcs_location: str = None,
+    gcs_key_path: str | None = None,
+    bucket: str | None = None,
+    remote_path: str | None = None,
+    gcs_location: str | None = None,
 ) -> dict:
     """Copy manifest.db to LAN and cloud destinations.
 

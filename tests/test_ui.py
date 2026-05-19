@@ -38,7 +38,7 @@ def test_index_shows_no_runs_message(client):
     """GET / shows 'No backup runs yet' when Prefect has no data."""
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
-        mock_instance.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: []))
+        mock_instance.post = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: []))
         mock_client.return_value.__aenter__.return_value = mock_instance
         response = client.get("/")
         assert response.status_code == 200
@@ -55,7 +55,7 @@ def test_index_shows_last_run_status(client):
     }]
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
-        mock_instance.get = AsyncMock(
+        mock_instance.post = AsyncMock(
             side_effect=[
                 MagicMock(status_code=200, json=lambda: mock_run),
                 MagicMock(status_code=200, json=lambda: []),
@@ -72,8 +72,12 @@ def test_trigger_backup_success(client):
     mock_deployments = [{"id": "test-deployment-id"}]
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
-        mock_instance.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: mock_deployments))
-        mock_instance.post = AsyncMock(return_value=MagicMock(status_code=201))
+        mock_instance.post = AsyncMock(
+            side_effect=[
+                MagicMock(status_code=200, json=lambda: mock_deployments),
+                MagicMock(status_code=201)
+            ]
+        )
         mock_client.return_value.__aenter__.return_value = mock_instance
         response = client.post("/trigger")
         assert response.status_code == 200
@@ -85,7 +89,7 @@ def test_trigger_backup_deployment_not_found(client):
     """POST /trigger returns error when deployment not found."""
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
-        mock_instance.get = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: []))
+        mock_instance.post = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: []))
         mock_client.return_value.__aenter__.return_value = mock_instance
         response = client.post("/trigger")
         assert response.status_code == 200
@@ -98,7 +102,7 @@ def test_trigger_backup_prefect_unavailable(client):
     """POST /trigger returns error when Prefect is unavailable."""
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
-        mock_instance.get = AsyncMock(side_effect=Exception("Connection refused"))
+        mock_instance.post = AsyncMock(side_effect=Exception("Connection refused"))
         mock_client.return_value.__aenter__.return_value = mock_instance
         response = client.post("/trigger")
         assert response.status_code == 200

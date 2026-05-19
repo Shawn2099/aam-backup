@@ -19,12 +19,12 @@ from typing import Optional
 try:
     import psutil
 except ImportError:
-    psutil = None
+    psutil = None  # type: ignore[assignment]
 
 try:
-    import ntplib
+    import ntplib  # type: ignore[import-not-found]
 except ImportError:
-    ntplib = None
+    ntplib = None  # type: ignore[assignment]
 
 from loguru import logger
 
@@ -101,7 +101,7 @@ class PreflightReport:
         ]
 
         # Group by category
-        categories = {}
+        categories: dict[str, list[CheckResult]] = {}
         for check in self.checks:
             categories.setdefault(check.category, []).append(check)
 

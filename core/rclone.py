@@ -7,6 +7,7 @@ from pathlib import Path
 from loguru import logger
 
 from core.manifest_db import ManifestDB
+from core.hashing import compute_checksum
 from models.config_model import AppConfig
 from models.scan_result import ScanResult
 
@@ -382,6 +383,23 @@ def run_rclone(
             ]
             if changed_paths:
                 db.batch_mark_cloud_backed_up(changed_paths)
+
+            # Compute checksums for new files that were successfully backed up (if not already done by LAN backup)
+            for file_info in scan_result.new_files:
+                entry = db.get_entry(file_info.relative_path)
+                if entry and entry.checksum == "pending":
+                    try:
+                        full_path = Path(paths_config.source_drive) / file_info.relative_path
+                        checksum = compute_checksum(full_path)
+                        
+                        db.upsert_entry(
+                            relative_path=file_info.relative_path,
+                            file_size=file_info.file_size,
+                            last_modified_timestamp=file_info.last_modified_timestamp,
+                            checksum=checksum,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not compute checksum for {file_info.relative_path}: {e}")
 
         return rclone_result
 

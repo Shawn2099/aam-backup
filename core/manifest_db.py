@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import text
+from sqlalchemy import text, select, update, delete
 
 from models.manifest_model import Base, FileManifest, create_engine_with_wal
 
@@ -98,9 +98,8 @@ class ManifestDB:
         """Get a manifest entry by relative path. Thread-safe read (no lock needed)."""
         session = self._get_session()
         try:
-            return session.query(FileManifest).filter_by(
-                relative_path=relative_path
-            ).first()
+            stmt = select(FileManifest).filter_by(relative_path=relative_path)
+            return session.execute(stmt).scalars().first()
         finally:
             session.close()
 
@@ -115,9 +114,8 @@ class ManifestDB:
         with self._lock:
             session = self._get_session()
             try:
-                entry = session.query(FileManifest).filter_by(
-                    relative_path=relative_path
-                ).first()
+                stmt = select(FileManifest).filter_by(relative_path=relative_path)
+                entry = session.execute(stmt).scalars().first()
 
                 if entry is None:
                     entry = FileManifest(
@@ -152,9 +150,8 @@ class ManifestDB:
         with self._lock:
             session = self._get_session()
             try:
-                entry = session.query(FileManifest).filter_by(
-                    relative_path=relative_path
-                ).first()
+                stmt = select(FileManifest).filter_by(relative_path=relative_path)
+                entry = session.execute(stmt).scalars().first()
                 if entry is None:
                     return False
                 entry.last_seen_at = datetime.now(timezone.utc).isoformat()
@@ -178,15 +175,14 @@ class ManifestDB:
             session = self._get_session()
             try:
                 now = datetime.now(timezone.utc).isoformat()
-                count = session.query(FileManifest).filter(
+                stmt = update(FileManifest).where(
                     FileManifest.relative_path.in_(relative_paths)
-                ).update(
-                    {
-                        FileManifest.backed_up_to_lan: 1,
-                        FileManifest.last_backed_up_lan: now,
-                    },
-                    synchronize_session="fetch",
+                ).values(
+                    backed_up_to_lan=1,
+                    last_backed_up_lan=now
                 )
+                result = session.execute(stmt)
+                count = result.rowcount
                 session.commit()
                 return count
             except Exception:
@@ -207,15 +203,14 @@ class ManifestDB:
             session = self._get_session()
             try:
                 now = datetime.now(timezone.utc).isoformat()
-                count = session.query(FileManifest).filter(
+                stmt = update(FileManifest).where(
                     FileManifest.relative_path.in_(relative_paths)
-                ).update(
-                    {
-                        FileManifest.backed_up_to_cloud: 1,
-                        FileManifest.last_backed_up_cloud: now,
-                    },
-                    synchronize_session="fetch",
+                ).values(
+                    backed_up_to_cloud=1,
+                    last_backed_up_cloud=now
                 )
+                result = session.execute(stmt)
+                count = result.rowcount
                 session.commit()
                 return count
             except Exception:
@@ -232,11 +227,10 @@ class ManifestDB:
         with self._lock:
             session = self._get_session()
             try:
-                result = session.query(FileManifest).filter_by(
-                    relative_path=relative_path
-                ).delete()
+                stmt = delete(FileManifest).where(FileManifest.relative_path == relative_path)
+                result = session.execute(stmt)
                 session.commit()
-                return result > 0
+                return result.rowcount > 0
             except Exception:
                 session.rollback()
                 raise
@@ -247,8 +241,9 @@ class ManifestDB:
         """Get all relative paths in the manifest. Thread-safe read (no lock needed)."""
         session = self._get_session()
         try:
-            rows = session.query(FileManifest.relative_path).all()
-            return {row[0] for row in rows}
+            stmt = select(FileManifest.relative_path)
+            rows = session.execute(stmt).scalars().all()
+            return set(rows)
         finally:
             session.close()
 
@@ -263,7 +258,8 @@ class ManifestDB:
         """
         session = self._get_session()
         try:
-            rows = session.query(FileManifest).all()
+            stmt = select(FileManifest)
+            rows = session.execute(stmt).scalars().all()
             return {entry.relative_path: entry for entry in rows}
         finally:
             session.close()

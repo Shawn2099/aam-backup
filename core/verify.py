@@ -9,31 +9,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import xxhash
-
-
+from typing import Any
 from models.scan_result import ScanResult
+from core.hashing import compute_checksum
 
 
-def _compute_file_checksum(file_path: Path) -> str:
-    """Compute xxHash64 for a single file.
-
-    Reads in 8MB chunks to avoid loading large files into memory.
-
-    Args:
-        file_path: Path to the file.
-
-    Returns:
-        16-character hex string.
-    """
-    h = xxhash.xxh64()
-    with open(file_path, "rb") as f:
-        while True:
-            chunk = f.read(8 * 1024 * 1024)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def verify_lan_checksums(
@@ -64,7 +44,7 @@ def verify_lan_checksums(
     sampled = random.sample(changed, actual_count)
 
     source_prefix = str(Path(source_drive).resolve())
-    results = []
+    results: list[dict[str, Any]] = []
     verified = 0
     mismatches = 0
     errors = 0
@@ -79,8 +59,8 @@ def verify_lan_checksums(
                 errors += 1
                 continue
 
-            source_hash = _compute_file_checksum(source_path)
-            lan_hash = _compute_file_checksum(lan_path)
+            source_hash = compute_checksum(source_path)
+            lan_hash = compute_checksum(lan_path)
 
             if source_hash == lan_hash:
                 results.append({"path": file_info.relative_path, "status": "OK", "checksum": source_hash})
@@ -149,7 +129,7 @@ def verify_cloud_checksums(
             encoding="utf-8",
         )
 
-        results = []
+        results: list[dict[str, Any]] = []
         verified = 0
         mismatches = 0
         errors = 0

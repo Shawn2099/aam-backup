@@ -8,7 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
-_handler_ids = []
+_handler_ids: list[int] = []
 
 
 def configure_logging(log_dir: str | Path, rotation: str = "1 day", retention: str = "30 days", enqueue: bool = True):

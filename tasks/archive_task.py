@@ -60,7 +60,7 @@ def yearly_archive_task(
         }
 
     try:
-        from google.cloud.storage.control_v2 import StorageControlClient
+        from google.cloud.storage.control_v2 import StorageControlClient  # type: ignore[import-untyped]
 
         # Initialize client with service account credentials
         client = StorageControlClient.from_service_account_json(gcs_key_path)

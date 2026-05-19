@@ -16,7 +16,7 @@ Creates:
 
 
 import typer
-from prefect_email import EmailServerCredentials
+from prefect_email import EmailServerCredentials  # type: ignore[import-untyped]
 from prefect.client.orchestration import get_client
 
 app = typer.Typer(help="Configure Prefect email notifications")
@@ -88,8 +88,9 @@ def setup(
 def _create_failure_automation(recipients: list[str], sender: str, block_name: str):
     """Create automation that sends email on flow run failure."""
     import asyncio
+    from datetime import timedelta
     from prefect.automations import Automation
-    from prefect.events.schemas.automations import EventTrigger
+    from prefect.events.schemas.automations import EventTrigger, Posture
     from prefect.events.actions import SendNotification
 
     trigger = EventTrigger(
@@ -101,13 +102,13 @@ def _create_failure_automation(recipients: list[str], sender: str, block_name: s
             "prefect.resource.role": "flow",
             "prefect.resource.name": "nightly-backup",
         },
-        posture="Reactive",
+        posture=Posture.Reactive,
         threshold=1,
-        within=0,
+        within=timedelta(0),
     )
 
     action = SendNotification(
-        block_document_id=None,  # Will be resolved by block name
+        block_document_id=None,  # type: ignore[arg-type] # Will be resolved by block name
         subject="BACKUP FAILED — {{ resource.name }}",
         body="Flow run {{ resource.id }} failed at {{ event.occurred }}.\n\nCheck Prefect UI for details.",
     )
@@ -162,8 +163,9 @@ def _create_failure_automation(recipients: list[str], sender: str, block_name: s
 def _create_weekly_summary_automation(recipients: list[str], sender: str, block_name: str):
     """Create automation for weekly summary email."""
     import asyncio
+    from datetime import timedelta
     from prefect.automations import Automation
-    from prefect.events.schemas.automations import EventTrigger
+    from prefect.events.schemas.automations import EventTrigger, Posture
     from prefect.events.actions import SendNotification
 
     # Weekly summary: trigger on Monday at 8:00 AM
@@ -177,9 +179,9 @@ def _create_weekly_summary_automation(recipients: list[str], sender: str, block_
             "prefect.resource.role": "flow",
             "prefect.resource.name": "nightly-backup",
         },
-        posture="Reactive",
+        posture=Posture.Reactive,
         threshold=1,
-        within=0,
+        within=timedelta(0),
     )
 
     automation = Automation(
@@ -189,6 +191,7 @@ def _create_weekly_summary_automation(recipients: list[str], sender: str, block_
         trigger=trigger,
         actions=[
             SendNotification(
+                block_document_id=None,  # type: ignore[arg-type]
                 subject="Weekly Backup Summary — {{ resource.name }}",
                 body="Weekly backup summary for {{ resource.name }}.\n\nCheck Prefect UI for full details.",
             )
