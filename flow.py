@@ -29,7 +29,7 @@ from tasks.no_run_alert_task import check_backup_not_run_alert_task
 from tasks.preflight_task import preflight_task
 from tasks.report_task import generate_report_task
 from tasks.scan_task import scan_task
-from tasks.test_restore_task import test_restore_task
+from tasks.restore_verify_task import test_restore_task
 from tasks.verification_task import verify_cloud_integrity_task
 from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
 from tasks.archive_task import yearly_archive_task
@@ -199,9 +199,15 @@ def _on_backup_completion(flow_obj, flow_run, state):
             logger.error(f"Failed to send success email: {e}")
 
 
+def _flow_run_name() -> str:
+    """Generate a unique flow run name with timestamp."""
+    from datetime import datetime
+    return f"backup-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+
 @flow(
     name="nightly-backup",
-    flow_run_name="backup-{config_path}-{date:%Y%m%d-%H%M%S}",
+    flow_run_name=_flow_run_name,
     task_runner=ThreadPoolTaskRunner(max_workers=2),
     log_prints=True,
     version="1.2.0",
@@ -695,11 +701,15 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
 
 if __name__ == "__main__":
-    nightly_backup.deploy(
-        name="nightly-backup-production",
-        work_pool_name="default",
-        cron="0 23 * * *",
-        parameters={"config_path": "config.yaml"},
-        tags=["production", "backup", "aam-associates"],
-        description="Nightly backup of D:\\ drive to LAN and GCS",
-    )
+    import sys
+    if "--deploy" in sys.argv:
+        nightly_backup.deploy(
+            name="nightly-backup-production",
+            work_pool_name="default",
+            cron="0 23 * * *",
+            parameters={"config_path": "config.yaml"},
+            tags=["production", "backup", "aam-associates"],
+            description="Nightly backup of D:\\ drive to LAN and GCS",
+        )
+    else:
+        nightly_backup()

@@ -187,7 +187,7 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
         ) as log_file:
             log_path = Path(log_file.name)
 
-        cmd.extend(["/log", str(log_path)])
+        cmd.extend([f"/log:{log_path}"])
 
         result = subprocess.run(
             cmd,

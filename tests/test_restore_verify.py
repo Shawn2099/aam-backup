@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.manifest_db import ManifestDB
-from tasks.test_restore_task import test_restore_task, _verify_lan_file, _verify_cloud_file
+from tasks.restore_verify_task import test_restore_task as restore_task, _verify_lan_file, _verify_cloud_file
 
 
 class TestVerifyLanFile:
@@ -48,7 +48,7 @@ class TestVerifyLanFile:
 class TestVerifyCloudFile:
     """Tests for cloud file verification."""
 
-    @patch("tasks.test_restore_task._write_temp_config")
+    @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
     def test_file_exists_and_matches_size(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
@@ -64,7 +64,7 @@ class TestVerifyCloudFile:
         assert result["status"] == "OK"
         assert result["size"] == 5000
 
-    @patch("tasks.test_restore_task._write_temp_config")
+    @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
     def test_file_missing(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
@@ -79,7 +79,7 @@ class TestVerifyCloudFile:
         )
         assert result["status"] == "MISSING"
 
-    @patch("tasks.test_restore_task._write_temp_config")
+    @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
     def test_file_size_mismatch(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
@@ -94,7 +94,7 @@ class TestVerifyCloudFile:
         )
         assert result["status"] == "MISMATCH"
 
-    @patch("tasks.test_restore_task._write_temp_config")
+    @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
     def test_rclone_timeout(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
@@ -110,7 +110,7 @@ class TestVerifyCloudFile:
         assert result["status"] == "ERROR"
         assert "timed out" in result["reason"]
 
-    @patch("tasks.test_restore_task._write_temp_config")
+    @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
     def test_rclone_not_found(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
@@ -131,7 +131,7 @@ class TestRestoreTask:
     """Tests for the full test restore task."""
 
     def test_skips_when_db_missing(self, tmp_path):
-        result = test_restore_task(
+        result = restore_task(
             database_path=str(tmp_path / "nonexistent.db"),
             source_drive="D:\\",
             lan_destination="\\\\192.168.10.10\\test$",
@@ -143,7 +143,7 @@ class TestRestoreTask:
         db = ManifestDB(db_path)
         db.close()
 
-        result = test_restore_task(
+        result = restore_task(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination="\\\\192.168.10.10\\test$",
@@ -157,7 +157,7 @@ class TestRestoreTask:
         db.upsert_entry("file2.txt", 200, 1700000001.0, checksum="pending")
         db.close()
 
-        result = test_restore_task(
+        result = restore_task(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination="\\\\192.168.10.10\\test$",
@@ -180,7 +180,7 @@ class TestRestoreTask:
         db.upsert_entry("file3.txt", 300, 1700000002.0, checksum="ghi789")
         db.close()
 
-        result = test_restore_task(
+        result = restore_task(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination=str(lan_dest),
@@ -205,7 +205,7 @@ class TestRestoreTask:
         db.upsert_entry("file2.txt", 200, 1700000001.0, checksum="def456")
         db.close()
 
-        result = test_restore_task(
+        result = restore_task(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination=str(lan_dest),
@@ -216,7 +216,7 @@ class TestRestoreTask:
         assert result["lan"]["status"] == "PARTIAL"
         assert result["lan"]["failed"] >= 1
 
-    @patch("tasks.test_restore_task._verify_cloud_file")
+    @patch("tasks.restore_verify_task._verify_cloud_file")
     def test_verifies_cloud_when_enabled(self, mock_cloud_verify, tmp_path):
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
@@ -229,7 +229,7 @@ class TestRestoreTask:
 
         mock_cloud_verify.return_value = {"path": "file1.txt", "status": "OK", "size": 100}
 
-        result = test_restore_task(
+        result = restore_task(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination=str(lan_dest),
@@ -256,7 +256,7 @@ class TestRestoreTask:
             db.upsert_entry(f"file{i}.txt", 100, 1700000000.0 + i, checksum=f"hash{i}")
         db.close()
 
-        result = test_restore_task(
+        result = restore_task(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination=str(lan_dest),

@@ -32,18 +32,18 @@ def check_backup_not_run_alert_task(
     """
     logger = get_run_logger()
     log_dir = Path(log_directory)
-    metrics_dir = log_dir / "metrics"
+    metrics_file = log_dir / "backup_metrics.jsonl"
 
-    if not metrics_dir.exists():
-        logger.warning(f"Metrics directory not found: {metrics_dir}")
+    if not metrics_file.exists():
+        logger.warning(f"Metrics file not found: {metrics_file}")
         return {
             "status": "UNKNOWN",
-            "reason": "metrics directory not found",
+            "reason": "metrics file not found",
             "warning_days": warning_days,
         }
 
-    # Find the most recent successful backup from metrics files
-    last_success_time = _find_last_successful_backup(metrics_dir)
+    # Find the most recent successful backup from metrics file
+    last_success_time = _find_last_successful_backup(metrics_file)
 
     if last_success_time is None:
         logger.warning("No successful backup runs found in metrics history")
@@ -84,43 +84,37 @@ def check_backup_not_run_alert_task(
     }
 
 
-def _find_last_successful_backup(metrics_dir: Path) -> datetime | None:
-    """Find the timestamp of the last successful backup from metrics files.
+def _find_last_successful_backup(metrics_file: Path) -> datetime | None:
+    """Find the timestamp of the last successful backup from metrics file.
 
     Args:
-        metrics_dir: Directory containing metrics JSONL files.
+        metrics_file: Path to the backup_metrics.jsonl file.
 
     Returns:
         Datetime of last successful backup, or None if not found.
     """
     last_time = None
 
-    # Look for metrics JSONL files (format: metrics_YYYYMMDD.jsonl)
-    metrics_files = sorted(metrics_dir.glob("metrics_*.jsonl"))
+    if not metrics_file.exists():
+        return None
 
-    for metrics_file in reversed(metrics_files):
-        try:
-            with open(metrics_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        if entry.get("overall_status") in ("COMPLETE", "PARTIAL_FAILURE"):
-                            run_time = entry.get("timestamp")
-                            if run_time:
-                                # Parse ISO 8601 timestamp
-                                run_dt = datetime.fromisoformat(run_time.replace("Z", "+00:00"))
-                                if last_time is None or run_dt > last_time:
-                                    last_time = run_dt
-                    except json.JSONDecodeError:
-                        continue
-        except OSError:
-            continue
-
-        # If we found a successful run in this file, we can stop searching
-        if last_time is not None:
-            break
+    try:
+        with open(metrics_file, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("overall_status") in ("COMPLETE", "PARTIAL_FAILURE"):
+                        run_time = entry.get("timestamp")
+                        if run_time:
+                            run_dt = datetime.fromisoformat(run_time.replace("Z", "+00:00"))
+                            if last_time is None or run_dt > last_time:
+                                last_time = run_dt
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
 
     return last_time

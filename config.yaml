@@ -1,49 +1,29 @@
-# ═══════════════════════════════════════════════════
-# BACKUP AUTOMATION SYSTEM — CONFIGURATION
-# ═══════════════════════════════════════════════════
-# Edit this file to change any setting.
-# Restart the PrefectWorker service after changes.
-# No code changes needed.
-# ═══════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════
-# FIRM IDENTIFICATION
-# ═══════════════════════════════════════════════════
 firm:
   name: "AAM Associates"
 
-# ═══════════════════════════════════════════════════
-# FILE SYSTEM PATHS
-# ═══════════════════════════════════════════════════
 paths:
-  source_drive: "D:\\"
-  lan_destination: "\\\\192.168.10.10\\hp srv manual backup$"
-  log_directory: "C:\\BackupAgent\\logs"
-  database_path: "C:\\BackupAgent\\manifest.db"
-  rclone_temp_directory: "C:\\BackupAgent\\rclone_temp"
+  source_drive: "E:\\"
+  lan_destination: "\\\\localhost\\BackupDest"
+  log_directory: "C:\\Users\\Administrator\\Desktop\\aam\\demo_logs"
+  database_path: "C:\\Users\\Administrator\\Desktop\\aam\\demo_manifest.db"
+  rclone_temp_directory: "C:\\Users\\Administrator\\Desktop\\aam\\demo_rclone_temp"
 
-# ═══════════════════════════════════════════════════
-# SCHEDULE
-# ═══════════════════════════════════════════════════
 schedule:
-  enabled: true
+  enabled: false
   daily_time: "23:00"
 
-# ═══════════════════════════════════════════════════
-# BACKUP SCOPE — WHAT GETS BACKED UP
-# ═══════════════════════════════════════════════════
 backup_scope:
   exclude_folders:
-    - "D:\\WINMAN\\Winman's mir bkup"
-    - "D:\\WINMAN\\winmanbackup"
-    - "D:\\WINMAN\\winman_backup"
-    - "D:\\WINMAN\\winman__backup"
-    - "D:\\Winman's mir bkup"
-    - "D:\\winman_backup"
-    - "D:\\Common Folder"
-    - "D:\\DELL SRV F"
-    - "D:\\Software_IT"
-    - "D:\\BackupAgent"
+    - "E:\\WINMAN\\Winman's mir bkup"
+    - "E:\\WINMAN\\winmanbackup"
+    - "E:\\WINMAN\\winman_backup"
+    - "E:\\WINMAN\\winman__backup"
+    - "E:\\Winman's mir bkup"
+    - "E:\\winman_backup"
+    - "E:\\Common Folder"
+    - "E:\\DELL SRV F"
+    - "E:\\Software_IT"
+    - "E:\\BackupAgent"
   exclude_extensions:
     - ".lnk"
     - ".tmp"
@@ -53,67 +33,45 @@ backup_scope:
     - "desktop.ini"
     - "Thumbs.db"
 
-# ═══════════════════════════════════════════════════
-# LAN BACKUP
-# ═══════════════════════════════════════════════════
 lan_backup:
   enabled: true
   retry_count: 3
   retry_wait_seconds: 10
-  subprocess_timeout_seconds: 14400
+  subprocess_timeout_seconds: 3600
 
-# ═══════════════════════════════════════════════════
-# WAKE-ON-LAN
-# ═══════════════════════════════════════════════════
 wol:
-  enabled: true
-  mac_address: ""
-  server_ip: "192.168.10.10"
+  enabled: false
+  mac_address: "00:00:00:00:00:00"
+  server_ip: "127.0.0.1"
   wake_timeout_seconds: 300
   ping_interval_seconds: 15
   stability_wait_seconds: 30
 
-# ═══════════════════════════════════════════════════
-# VOLUME SHADOW COPY (VSS)
-# Set enabled: true if Tally/Winman run overnight
-# ═══════════════════════════════════════════════════
 vss:
   enabled: false
-  drive_letter: "D"
+  drive_letter: "E"
   fallback_on_failure: true
 
-# ═══════════════════════════════════════════════════
-# CLOUD BACKUP
-# ═══════════════════════════════════════════════════
 cloud_backup:
-  enabled: true
+  enabled: false
   provider: "gcs"
-  bucket: ""
-  remote_path: "D_Drive_Backup"
+  bucket: "demo-bucket"
+  remote_path: "E_Drive_Backup"
   gcs_location: "asia-south1"
   bandwidth_limit: "10M"
   chunk_size: "100M"
   retry_count: 3
-  subprocess_timeout_seconds: 21600
+  subprocess_timeout_seconds: 3600
 
-# ═══════════════════════════════════════════════════
-# CLOUD CREDENTIALS
-# ═══════════════════════════════════════════════════
 cloud_credentials:
   credential_name: "BackupAgent_GCS"
 
-# ═══════════════════════════════════════════════════
-# STATUS UI
-# ═══════════════════════════════════════════════════
 ui:
   enabled: true
   host: "0.0.0.0"
   port: 8080
   prefect_api_url: "http://127.0.0.1:4200/api"
 
-# ═══════════════════════════════════════════════════
-# NOTIFICATIONS
-# ═══════════════════════════════════════════════════
 notifications:
   smtp_host: ""
   smtp_port: 587
@@ -121,24 +79,11 @@ notifications:
   smtp_password_credential: "BackupAgent_SMTP"
   sender: ""
   recipients: []
-  send_on_every_run: true
-  send_on_failure: true
-  weekly_summary_enabled: true
+  send_on_every_run: false
+  send_on_failure: false
+  weekly_summary_enabled: false
   weekly_summary_day: "monday"
   weekly_summary_time: "08:00"
 
-# ═══════════════════════════════════════════════════
-# ALERTS
-# ═══════════════════════════════════════════════════
 alerts:
   no_changes_warning_days: 7
-  lan_free_space_warning_gb: 50
-  backup_duration_warning_minutes: 180
-
-# ═══════════════════════════════════════════════════
-# TEST RESTORE — Periodic random file verification
-# ═══════════════════════════════════════════════════
-test_restore:
-  enabled: true
-  sample_count: 10
-  run_every_n_backups: 7

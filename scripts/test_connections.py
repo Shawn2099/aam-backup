@@ -41,21 +41,19 @@ def test_lan_connection(config: dict) -> bool:
 
     if sys.platform == "win32":
         try:
-            result = subprocess.run(
-                ["dir", dest],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                shell=True,
-            )
-            if result.returncode == 0:
+            dest_path = Path(dest)
+            if dest_path.exists():
+                list(dest_path.iterdir())
                 typer.echo("  LAN share is accessible")
                 return True
             else:
-                typer.echo(f"  LAN share access failed: {result.stderr.strip()}")
+                typer.echo(f"  LAN share not found: {dest}")
                 return False
-        except subprocess.TimeoutExpired:
-            typer.echo("  LAN share connection timed out")
+        except PermissionError as e:
+            typer.echo(f"  LAN share access denied: {e}")
+            return False
+        except OSError as e:
+            typer.echo(f"  LAN share access failed: {e}")
             return False
     else:
         if not server_ip:
