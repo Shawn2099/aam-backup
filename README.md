@@ -110,7 +110,7 @@ uv sync --extra preflight
 
 ## Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for complete step-by-step deployment guide on Windows Server 2016.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for complete step-by-step deployment guide on Windows Server 2016.
 
 ### Quick Deploy Checklist
 
@@ -125,11 +125,11 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for complete step-by-step deployment guide on
 9. [ ] Run `deploy/install_services.bat` (as Administrator)
 10. [ ] Run `uv run deploy/create_deployment.py create`
 11. [ ] Verify status UI at `http://<server>:8080`
-12. [ ] Run post-deployment verification (see DEPLOYMENT.md)
+12. [ ] Run post-deployment verification (see docs/DEPLOYMENT.md)
 
 ## Disaster Recovery
 
-See [DR_RUNBOOK.md](DR_RUNBOOK.md) for recovery procedures including:
+See [docs/DR_RUNBOOK.md](docs/DR_RUNBOOK.md) for recovery procedures including:
 - Single file restore (LAN, GCS, CLI)
 - Full server recovery (RTO: 8-12 hours)
 - manifest.db corruption recovery

@@ -97,7 +97,7 @@ flow.py      — Prefect flow definition (entry point for worker)
 
 ## Detailed Specs
 
-- **`plan.md`** — Complete technical specification (every flag, exit code, algorithm, config field, DB column)
-- **`DECISIONS.md`** — Audit trail of all decisions made during planning
+- **`docs/plan.md`** — Complete technical specification (every flag, exit code, algorithm, config field, DB column)
+- **`docs/DECISIONS.md`** — Audit trail of all decisions made during planning
 
-Read `plan.md` for implementation details. This file is for quick orientation and preventing common mistakes.
+Read `docs/plan.md` for implementation details. This file is for quick orientation and preventing common mistakes.
