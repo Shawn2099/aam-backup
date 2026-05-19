@@ -1195,7 +1195,7 @@ def check_log_directory(log_path: str) -> CheckResult:
 
 # ─── Binary Checks ──────────────────────────────────────────────────────
 
-def check_binaries() -> list[CheckResult]:
+def check_binaries(cloud_enabled: bool = False) -> list[CheckResult]:
     """Check that required binaries are available with versions."""
     results = []
 
@@ -1224,21 +1224,29 @@ def check_binaries() -> list[CheckResult]:
             message="Skipped (Linux dev mode)",
         ))
 
-    # Rclone
-    rclone_path = shutil.which("rclone")
-    if rclone_path:
-        results.append(CheckResult(
-            category="Binaries",
-            name="Rclone",
-            severity=Severity.PASS,
-            message=f"Found at {rclone_path}",
-        ))
+    # Rclone (only if cloud backup enabled)
+    if cloud_enabled:
+        rclone_path = shutil.which("rclone")
+        if rclone_path:
+            results.append(CheckResult(
+                category="Binaries",
+                name="Rclone",
+                severity=Severity.PASS,
+                message=f"Found at {rclone_path}",
+            ))
+        else:
+            results.append(CheckResult(
+                category="Binaries",
+                name="Rclone",
+                severity=Severity.FAIL,
+                message="Not found in PATH",
+            ))
     else:
         results.append(CheckResult(
             category="Binaries",
             name="Rclone",
-            severity=Severity.FAIL,
-            message="Not found in PATH",
+            severity=Severity.SKIP,
+            message="Skipped (cloud backup disabled)",
         ))
 
     # Python version
@@ -1369,8 +1377,9 @@ def run_preflight_checks(config: dict) -> PreflightReport:
         report.checks.append(check_dns_resolution("storage.googleapis.com"))
 
     # Binaries
-    report.checks.extend(check_binaries())
-    report.checks.append(check_rclone_version())
+    report.checks.extend(check_binaries(cloud.get("enabled", False)))
+    if cloud.get("enabled", False):
+        report.checks.append(check_rclone_version())
 
     # Credentials
     report.checks.append(check_credential_manager(config.get("cloud_credentials", {}).get("credential_name", "")))
@@ -1384,21 +1393,15 @@ def run_preflight_checks(config: dict) -> PreflightReport:
     # Cloud
     if cloud.get("enabled", False):
         # Validate GCS key file before connectivity check
-        from core.config_loader import load_config
+        gcs_key_path = None
         try:
-            full_config = load_config(Path(__file__).parent.parent / "config.yaml")
-            gcs_key_path = None
-            # Try to get key path from credential manager
-            try:
-                import keyring
-                cred_name = config.get("cloud_credentials", {}).get("credential_name", "BackupAgent_GCS")
-                gcs_key_path = keyring.get_password("BackupAgent", cred_name)
-            except Exception:
-                pass
-            if gcs_key_path:
-                report.checks.append(check_gcs_key_path(gcs_key_path))
+            import keyring
+            cred_name = config.get("cloud_credentials", {}).get("credential_name", "BackupAgent_GCS")
+            gcs_key_path = keyring.get_password("BackupAgent", cred_name)
         except Exception:
             pass
+        if gcs_key_path:
+            report.checks.append(check_gcs_key_path(gcs_key_path))
 
         report.checks.append(check_gcs_connectivity(cloud.get("bucket", "")))
         report.checks.append(check_gcs_versioning(cloud.get("bucket", "")))
