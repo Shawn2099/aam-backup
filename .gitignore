@@ -52,3 +52,7 @@ graphify-out/
 # Mypy output
 mypy_out.txt
 .gitnexus
+
+# AI assistant artifacts
+.claude/
+CLAUDE.md
