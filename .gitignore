@@ -45,3 +45,9 @@ htmlcov/
 
 # Planning (internal dev artifacts)
 .planning/
+
+# Graphify output
+graphify-out/
+
+# Mypy output
+mypy_out.txt

@@ -42,3 +42,16 @@ dev = [
 addopts = "-v --tb=short"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "prefect_email.*",
+    "wakeonlan.*",
+    "keyring.*",
+]
+ignore_missing_imports = true
+

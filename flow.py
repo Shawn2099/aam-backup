@@ -3,13 +3,11 @@
 import logging
 import os
 import shutil
-import smtplib
 import time
 import keyring
 from datetime import datetime, timezone
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from pathlib import Path
+from prefect_email import EmailServerCredentials, email_send_message
 
 from prefect import flow
 from prefect.context import get_run_context
@@ -43,7 +41,7 @@ _hook_logger = logging.getLogger(__name__)
 
 
 def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
-    """Send failure notification email using SMTP config from config.yaml."""
+    """Send failure notification email using SMTP config from config.yaml or Prefect block."""
     try:
         config = load_config(config_path)
         notif = config.notifications
@@ -55,11 +53,6 @@ def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
         smtp_password = keyring.get_password("BackupAgent", notif.smtp_password_credential)
         if not smtp_password:
             return  # Credential not found
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Backup Failed — {config.firm.name}"
-        msg["From"] = notif.sender
-        msg["To"] = ", ".join(notif.recipients)
 
         body_text = (
             f"Backup Failure Notification\n"
@@ -82,20 +75,32 @@ def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
         </body></html>
         """
 
-        msg.attach(MIMEText(body_text, "plain"))
-        msg.attach(MIMEText(body_html, "html"))
+        try:
+            email_credentials = EmailServerCredentials.load("backup-email")
+        except Exception:
+            email_credentials = EmailServerCredentials(
+                username=notif.smtp_username,
+                password=smtp_password,
+                smtp_server=notif.smtp_host,
+                smtp_port=notif.smtp_port,
+                smtp_type="STARTTLS",
+            )
 
-        with smtplib.SMTP(notif.smtp_host, notif.smtp_port) as server:
-            server.starttls()
-            server.login(notif.smtp_username, smtp_password)
-            server.sendmail(notif.sender, notif.recipients, msg.as_string())
+        email_send_message.fn(
+            subject=f"Backup Failed — {config.firm.name}",
+            msg=body_html,
+            msg_plain=body_text,
+            email_server_credentials=email_credentials,
+            email_from=notif.sender,
+            email_to=notif.recipients,
+        )
 
     except Exception as e:
         _hook_logger.error(f"Failed to send failure email: {e}")
 
 
 def _send_success_email(config_path: str, flow_run_id: str, status: str, duration: float):
-    """Send success notification email using SMTP config from config.yaml."""
+    """Send success notification email using SMTP config from config.yaml or Prefect block."""
     try:
         config = load_config(config_path)
         notif = config.notifications
@@ -111,11 +116,6 @@ def _send_success_email(config_path: str, flow_run_id: str, status: str, duratio
         minutes = int((duration % 3600) // 60)
         seconds = int(duration % 60)
         duration_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Backup Complete — {config.firm.name}"
-        msg["From"] = notif.sender
-        msg["To"] = ", ".join(notif.recipients)
 
         body_text = (
             f"Backup Success Notification\n"
@@ -138,13 +138,25 @@ def _send_success_email(config_path: str, flow_run_id: str, status: str, duratio
         </body></html>
         """
 
-        msg.attach(MIMEText(body_text, "plain"))
-        msg.attach(MIMEText(body_html, "html"))
+        try:
+            email_credentials = EmailServerCredentials.load("backup-email")
+        except Exception:
+            email_credentials = EmailServerCredentials(
+                username=notif.smtp_username,
+                password=smtp_password,
+                smtp_server=notif.smtp_host,
+                smtp_port=notif.smtp_port,
+                smtp_type="STARTTLS",
+            )
 
-        with smtplib.SMTP(notif.smtp_host, notif.smtp_port) as server:
-            server.starttls()
-            server.login(notif.smtp_username, smtp_password)
-            server.sendmail(notif.sender, notif.recipients, msg.as_string())
+        email_send_message.fn(
+            subject=f"Backup Complete — {config.firm.name}",
+            msg=body_html,
+            msg_plain=body_text,
+            email_server_credentials=email_credentials,
+            email_from=notif.sender,
+            email_to=notif.recipients,
+        )
 
     except Exception as e:
         _hook_logger.error(f"Failed to send success email: {e}")
@@ -199,7 +211,7 @@ def _on_backup_completion(flow_obj, flow_run, state):
 @flow(
     name="nightly-backup",
     flow_run_name="backup-{config_path}-{date:%Y%m%d-%H%M%S}",
-    task_runner=ThreadPoolTaskRunner(max_workers=2),
+    task_runner=ThreadPoolTaskRunner(max_workers=2),  # type: ignore[arg-type]
     log_prints=True,
     version="1.2.0",
     timeout_seconds=28800,  # 8 hours max
@@ -289,7 +301,7 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 if config.notifications.send_on_failure:
                     try:
                         ctx = get_run_context()
-                        flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
+                        flow_run_id = str(ctx.flow_run.id) if ctx and getattr(ctx, "flow_run", None) else "unknown"  # type: ignore[union-attr]
                         _send_failure_email(
                             config_path,
                             flow_run_id,
@@ -364,7 +376,7 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
             try:
                 duration = time.time() - start_time
                 ctx = get_run_context()
-                flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
+                flow_run_id = str(ctx.flow_run.id) if ctx and getattr(ctx, "flow_run", None) else "unknown"  # type: ignore[union-attr]
 
                 collect_metrics_task(
                     log_directory=config.paths.log_directory,
@@ -479,7 +491,7 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         try:
             duration = time.time() - start_time
             ctx = get_run_context()
-            flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
+            flow_run_id = str(ctx.flow_run.id) if ctx and getattr(ctx, "flow_run", None) else "unknown"  # type: ignore[union-attr]
 
             collect_metrics_task(
                 log_directory=config.paths.log_directory,
