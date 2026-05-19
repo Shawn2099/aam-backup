@@ -1,9 +1,8 @@
 """Tests for flow.py and task integration."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from models.scan_result import ScanResult
 
 
 def test_flow_definition_exists():
@@ -30,11 +29,16 @@ def test_flow_timeout_configured():
     assert nightly_backup.timeout_seconds == 28800
 
 
-def test_flow_retries_configured():
-    """Flow has retries and retry_delay_seconds configured."""
+def test_flow_retries_disabled():
+    """Flow has NO retries — task-level retries handle transient failures.
+
+    Flow-level retries would restart the entire flow from the beginning,
+    causing double-backup on non-idempotent operations (Robocopy /MIR,
+    VSS snapshots, config versioning). Individual tasks have their own
+    retries (LAN=3, Cloud=3, Config=2).
+    """
     from flow import nightly_backup
-    assert nightly_backup.retries == 1
-    assert nightly_backup.retry_delay_seconds == 300
+    assert nightly_backup.retries == 0
 
 
 def test_flow_on_failure_hook():

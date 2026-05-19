@@ -14,8 +14,6 @@ Creates:
 3. Automation: send weekly summary on Monday at 8:00 AM
 """
 
-import sys
-from typing import Optional
 
 import typer
 from prefect_email import EmailServerCredentials
@@ -52,8 +50,8 @@ def setup(
     if dry_run:
         typer.echo("\n  [DRY RUN] Would create:")
         typer.echo(f"    - EmailServerCredentials block: {block_name}")
-        typer.echo(f"    - Automation: email on flow run failure")
-        typer.echo(f"    - Automation: weekly summary (Monday 8:00 AM)")
+        typer.echo("    - Automation: email on flow run failure")
+        typer.echo("    - Automation: weekly summary (Monday 8:00 AM)")
         return
 
     try:
@@ -126,9 +124,8 @@ def _create_failure_automation(recipients: list[str], sender: str, block_name: s
         async with get_client() as client:
             # Load the block to get its ID
             from prefect.blocks.core import Block
-            block = await Block.load(name=block_name)
+            _ = await Block.load(name=block_name)
             # Create automation via REST API
-            import httpx
             resp = await client._client.post(
                 "/automations/",
                 json={
@@ -166,7 +163,7 @@ def _create_weekly_summary_automation(recipients: list[str], sender: str, block_
     """Create automation for weekly summary email."""
     import asyncio
     from prefect.automations import Automation
-    from prefect.events.schemas.automations import EventTrigger, Posture
+    from prefect.events.schemas.automations import EventTrigger
     from prefect.events.actions import SendNotification
 
     # Weekly summary: trigger on Monday at 8:00 AM
@@ -200,7 +197,6 @@ def _create_weekly_summary_automation(recipients: list[str], sender: str, block_
 
     async def _create():
         async with get_client() as client:
-            import httpx
             resp = await client._client.post(
                 "/automations/",
                 json={

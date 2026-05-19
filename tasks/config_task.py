@@ -1,6 +1,5 @@
 """Prefect task: load configuration."""
 
-from pathlib import Path
 
 from prefect import task
 from prefect.logging import get_run_logger

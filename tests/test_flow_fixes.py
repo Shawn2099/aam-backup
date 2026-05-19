@@ -4,8 +4,4 @@ Note: ConcurrencyGuard tests removed — Servy now handles single-instance
 service management, making the file-based lock redundant.
 """
 
-import os
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-import pytest

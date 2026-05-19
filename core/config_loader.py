@@ -47,10 +47,10 @@ def load_config(config_path: str | Path) -> AppConfig:
     except ValidationError as e:
         errors = []
         for error in e.errors():
-            loc = ".".join(str(l) for l in error["loc"])
+            loc = ".".join(str(part) for part in error["loc"])
             errors.append(f"{loc}: {error['msg']}")
         raise ConfigurationError(
-            f"Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+            "Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
         )
 
 

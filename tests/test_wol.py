@@ -64,7 +64,7 @@ def test_ensure_server_online_wol_needed(temp_config):
         call_count[0] += 1
         return call_count[0] >= 2  # Fail first, succeed second
 
-    with patch("core.wol.ping_host", side_effect=mock_ping) as mock_ping_fn:
+    with patch("core.wol.ping_host", side_effect=mock_ping):
         with patch("core.wol.send_magic_packet") as mock_wol:
             assert ensure_server_online(temp_config) is True
             mock_wol.assert_called_once()

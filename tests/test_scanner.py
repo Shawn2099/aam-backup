@@ -1,9 +1,7 @@
 """Tests for scanner.py."""
 
-import os
 from pathlib import Path
 
-import pytest
 
 from core.scanner import (
     compute_checksum,
@@ -13,7 +11,6 @@ from core.scanner import (
     scan_drive,
 )
 from models.config_model import AppConfig
-from models.scan_result import FileInfo
 
 
 def test_compute_checksum(temp_dir):

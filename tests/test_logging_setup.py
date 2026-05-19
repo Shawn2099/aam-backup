@@ -1,7 +1,5 @@
 """Tests for logging_setup.py."""
 
-import os
-from pathlib import Path
 
 from core.logging_setup import configure_logging
 from loguru import logger

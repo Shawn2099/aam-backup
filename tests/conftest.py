@@ -3,17 +3,41 @@
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
 
 from core.config_loader import load_config
 from core.manifest_db import ManifestDB
-from models.config_model import AppConfig
+
+
+os.environ.setdefault("PREFECT_API_URL", "")
+os.environ.setdefault("PREFECT_HOME", str(Path(__file__).parent.parent / ".prefect"))
+
+
+@pytest.fixture(autouse=True)
+def prefect_offline():
+    """Force Prefect into offline mode so tasks run without API server."""
+    with patch.dict(os.environ, {"PREFECT_API_URL": ""}, clear=False):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def cleanup_logging():
+    """Close Loguru handlers after each test to release file handles on Windows."""
+    yield
+    try:
+        from core.logging_setup import close_logging
+        close_logging()
+    except Exception:
+        pass
+    import time
+    time.sleep(0.1)
 
 
 @pytest.fixture
-def temp_dir():
+def temp_dir(cleanup_logging):
     """Create a temporary directory that is cleaned up after the test."""
     with tempfile.TemporaryDirectory() as td:
         yield Path(td)

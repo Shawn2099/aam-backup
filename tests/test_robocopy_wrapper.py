@@ -2,10 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from core.robocopy import (
-    RobocopyResult,
     _classify_exit_code,
     _parse_robocopy_output,
     run_robocopy,

@@ -1,13 +1,9 @@
 """Tests for rclone.py."""
 
-import os
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from core.rclone import (
-    RcloneResult,
     _classify_exit_code,
     _write_filter_file,
     _write_temp_config,

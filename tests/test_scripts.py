@@ -1,11 +1,8 @@
 """Tests for deployment and setup scripts."""
 
-import subprocess
-import sys
 from pathlib import Path
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import patch, MagicMock
 
-import pytest
 import yaml
 
 

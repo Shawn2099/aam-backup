@@ -1,7 +1,6 @@
 """Prefect task: manage VSS shadow copy lifecycle."""
 
 import platform
-from pathlib import Path
 
 from prefect import task
 from prefect.logging import get_run_logger

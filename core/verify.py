@@ -11,7 +11,6 @@ from pathlib import Path
 
 import xxhash
 
-from loguru import logger
 
 from models.scan_result import ScanResult
 

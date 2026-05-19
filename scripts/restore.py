@@ -10,9 +10,7 @@ Usage:
     uv run scripts/restore.py restore --source lan --full --dest "D:\Restored"
 """
 
-import json
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 

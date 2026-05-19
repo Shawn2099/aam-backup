@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from prefect import task
 from prefect.logging import get_run_logger

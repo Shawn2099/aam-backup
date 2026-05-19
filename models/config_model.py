@@ -291,3 +291,48 @@ class AppConfig(BaseModel):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     test_restore: TestRestoreConfig = Field(default_factory=TestRestoreConfig)
+
+    @property
+    def backup_destinations(self) -> dict:
+        """Return status of each backup destination.
+
+        Returns dict with keys: lan, cloud, any_enabled, all_disabled, warning.
+        """
+        lan = {
+            "enabled": self.lan_backup.enabled,
+            "label": "LAN Backup",
+            "destination": self.paths.lan_destination,
+        }
+        cloud = {
+            "enabled": self.cloud_backup.enabled,
+            "label": "Cloud Backup",
+            "provider": self.cloud_backup.provider,
+            "bucket": self.cloud_backup.bucket,
+        }
+        any_enabled = lan["enabled"] or cloud["enabled"]
+        all_disabled = not any_enabled
+
+        warning = None
+        if all_disabled:
+            warning = "Both LAN and Cloud backup are disabled. No data will be backed up."
+
+        return {
+            "lan": lan,
+            "cloud": cloud,
+            "any_enabled": any_enabled,
+            "all_disabled": all_disabled,
+            "warning": warning,
+        }
+
+    def validate_backup_destinations(self) -> list[str]:
+        """Validate that at least one backup destination is enabled.
+
+        Returns list of warning/error messages. Empty list means OK.
+        """
+        issues = []
+        if not self.lan_backup.enabled and not self.cloud_backup.enabled:
+            issues.append(
+                "CRITICAL: Both LAN and Cloud backup are disabled. "
+                "No data will be backed up. Enable at least one destination in config.yaml."
+            )
+        return issues

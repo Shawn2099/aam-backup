@@ -1,10 +1,7 @@
 """Tests for manifest DB maintenance task."""
 
 import sqlite3
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-import pytest
 
 from core.manifest_db import ManifestDB, SCHEMA_VERSION
 from tasks.maintenance_task import maintain_manifest_db_task

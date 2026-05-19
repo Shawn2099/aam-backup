@@ -1,22 +1,26 @@
 """Prefect flow: nightly backup orchestration."""
 
+import logging
 import os
+import shutil
 import smtplib
 import time
 import keyring
+from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 
 from prefect import flow
+from prefect.context import get_run_context
 from prefect.logging import get_run_logger
-from prefect.tasks import exponential_backoff
 from prefect.task_runners import ThreadPoolTaskRunner
 
 from core.config_loader import load_config
 from core.logging_setup import configure_logging
-from core.manifest_db import ManifestDB
+from tasks.archive_task import yearly_archive_task
 from tasks.cloud_task import cloud_backup_task
+from tasks.config_backup_task import backup_config_task
 from tasks.config_task import load_config_task
 from tasks.config_version_task import version_config_task
 from tasks.lan_task import lan_backup_task
@@ -28,11 +32,14 @@ from tasks.metrics_task import collect_metrics_task
 from tasks.no_run_alert_task import check_backup_not_run_alert_task
 from tasks.preflight_task import preflight_task
 from tasks.report_task import generate_report_task
+from tasks.restore_verify_task import test_restore_task
 from tasks.scan_task import scan_task
-from tasks.test_restore_task import test_restore_task
+from tasks.stale_backup_task import check_stale_backup_task
 from tasks.verification_task import verify_cloud_integrity_task
 from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
-from tasks.archive_task import yearly_archive_task
+
+
+_hook_logger = logging.getLogger(__name__)
 
 
 def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
@@ -50,7 +57,7 @@ def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
             return  # Credential not found
 
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"❌ Backup Failed — {config.firm.name}"
+        msg["Subject"] = f"Backup Failed — {config.firm.name}"
         msg["From"] = notif.sender
         msg["To"] = ", ".join(notif.recipients)
 
@@ -84,11 +91,7 @@ def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
             server.sendmail(notif.sender, notif.recipients, msg.as_string())
 
     except Exception as e:
-        try:
-            logger = get_run_logger()
-            logger.error(f"Failed to send failure email: {e}")
-        except Exception:
-            pass
+        _hook_logger.error(f"Failed to send failure email: {e}")
 
 
 def _send_success_email(config_path: str, flow_run_id: str, status: str, duration: float):
@@ -110,7 +113,7 @@ def _send_success_email(config_path: str, flow_run_id: str, status: str, duratio
         duration_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
 
         msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"✅ Backup Complete — {config.firm.name}"
+        msg["Subject"] = f"Backup Complete — {config.firm.name}"
         msg["From"] = notif.sender
         msg["To"] = ", ".join(notif.recipients)
 
@@ -144,11 +147,7 @@ def _send_success_email(config_path: str, flow_run_id: str, status: str, duratio
             server.sendmail(notif.sender, notif.recipients, msg.as_string())
 
     except Exception as e:
-        try:
-            logger = get_run_logger()
-            logger.error(f"Failed to send success email: {e}")
-        except Exception:
-            pass
+        _hook_logger.error(f"Failed to send success email: {e}")
 
 
 def _get_and_increment_run_counter(log_directory: str) -> int:
@@ -171,8 +170,7 @@ def _get_and_increment_run_counter(log_directory: str) -> int:
 
 def _on_backup_failure(flow_obj, flow_run, state):
     """Hook called when the backup flow fails."""
-    logger = get_run_logger()
-    logger.critical(
+    _hook_logger.critical(
         f"Backup flow FAILED: {state.message}. "
         f"Run ID: {flow_run.id}. "
         f"Check Prefect UI for details."
@@ -185,8 +183,7 @@ def _on_backup_failure(flow_obj, flow_run, state):
 
 def _on_backup_completion(flow_obj, flow_run, state):
     """Hook called when the backup flow completes successfully."""
-    logger = get_run_logger()
-    logger.info(f"Backup flow completed successfully. Run ID: {flow_run.id}")
+    _hook_logger.info(f"Backup flow completed successfully. Run ID: {flow_run.id}")
 
     config_path = flow_run.parameters.get("config_path", "config.yaml")
     config = load_config(config_path)
@@ -196,7 +193,7 @@ def _on_backup_completion(flow_obj, flow_run, state):
             duration = flow_run.total_run_time or 0
             _send_success_email(config_path, str(flow_run.id), "COMPLETE", duration)
         except Exception as e:
-            logger.error(f"Failed to send success email: {e}")
+            _hook_logger.error(f"Failed to send success email: {e}")
 
 
 @flow(
@@ -206,8 +203,6 @@ def _on_backup_completion(flow_obj, flow_run, state):
     log_prints=True,
     version="1.2.0",
     timeout_seconds=28800,  # 8 hours max
-    retries=1,
-    retry_delay_seconds=300,  # 5 minutes
     on_failure=[_on_backup_failure],
     on_completion=[_on_backup_completion],
 )
@@ -243,6 +238,19 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
         # Task 1: Load configuration
         config, gcs_key_path = load_config_task(config_path)
+
+        # Validate at least one backup destination is enabled
+        dest_issues = config.validate_backup_destinations()
+        for issue in dest_issues:
+            logger.critical(issue)
+        if dest_issues:
+            raise RuntimeError("No backup destinations enabled. Check config.yaml.")
+
+        # Log backup destination status
+        dest = config.backup_destinations
+        lan_status_str = "ENABLED" if dest["lan"]["enabled"] else "DISABLED"
+        cloud_status_str = "ENABLED" if dest["cloud"]["enabled"] else "DISABLED"
+        logger.info(f"Backup destinations — LAN: {lan_status_str}, Cloud: {cloud_status_str}")
 
         # Task 1b: Version config before run
         try:
@@ -280,7 +288,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 # Send email notification if configured
                 if config.notifications.send_on_failure:
                     try:
-                        from prefect.context import get_run_context
                         ctx = get_run_context()
                         flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
                         _send_failure_email(
@@ -293,14 +300,10 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         except Exception as e:
             logger.warning(f"No-run alert check failed (non-critical): {e}")
 
-        # BUG FIX #5: Pre-backup manifest backup — protects against corruption during this run
+        # Pre-backup manifest maintenance — protects against corruption during this run
         try:
-            db = ManifestDB(config.paths.database_path)
-            try:
-                db.maintenance(max_size_mb=500)
-            finally:
-                db.close()
-            logger.info("Manifest DB maintenance completed before backup")
+            maintain_manifest_db_task(config.paths.database_path, max_size_mb=500)
+            logger.info("Manifest DB pre-backup maintenance completed")
         except Exception as e:
             logger.warning(f"Pre-backup manifest maintenance failed (non-critical): {e}")
 
@@ -324,15 +327,10 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
             else:
                 logger.info("Using direct source drive (VSS not used)")
 
-        # Task 2: Pre-flight checks
-        preflight_result = preflight_task(config.model_dump())
-        config_dict = preflight_result["config"]
+        # Task 2: Pre-flight checks (report only — keep original config object)
+        _ = preflight_task(config.model_dump())
 
-        # Rebuild config from preflight output
-        from models.config_model import AppConfig
-        config = AppConfig(**config_dict)
-
-        # BUG FIX #1: Re-apply VSS source path after preflight rebuilds config
+        # Apply VSS source path if shadow copy is active
         if vss_enabled and vss_device_path:
             config = config.model_copy(
                 update={
@@ -357,31 +355,14 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
             threshold = config.alerts.no_changes_warning_days
             if threshold > 0:
-                from datetime import datetime, timezone, timedelta
-                cutoff = datetime.now(timezone.utc) - timedelta(days=threshold)
-                cutoff_iso = cutoff.isoformat()
-
-                db = ManifestDB(config.paths.database_path)
                 try:
-                    all_entries = db.get_all_entries()
-                    recent_backup = any(
-                        (e.last_backed_up_lan or "") > cutoff_iso or
-                        (e.last_backed_up_cloud or "") > cutoff_iso
-                        for e in all_entries.values()
-                    )
-                    if not recent_backup and all_entries:
-                        logger.warning(
-                            f"No file changes detected in {threshold}+ days. "
-                            f"Scanner may be misconfigured or source drive unchanged. "
-                            f"Total files in manifest: {len(all_entries)}"
-                        )
-                finally:
-                    db.close()
+                    check_stale_backup_task(config.paths.database_path, threshold)
+                except Exception as e:
+                    logger.warning(f"Stale backup check failed (non-critical): {e}")
 
-            # BUG FIX #3: Collect metrics even on "no change" runs
+            # Collect metrics even on "no change" runs
             try:
                 duration = time.time() - start_time
-                from prefect.context import get_run_context
                 ctx = get_run_context()
                 flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
 
@@ -497,7 +478,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         # Collect metrics for trend analysis
         try:
             duration = time.time() - start_time
-            from prefect.context import get_run_context
             ctx = get_run_context()
             flow_run_id = str(ctx.flow_run.id) if ctx and ctx.flow_run else "unknown"
 
@@ -534,7 +514,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
         # Check LAN destination free space and warn if approaching capacity
         try:
-            import shutil
             lan_free = shutil.disk_usage(config.paths.lan_destination).free
             lan_free_gb = lan_free / (1024 ** 3)
             threshold_gb = config.alerts.lan_free_space_warning_gb
@@ -559,7 +538,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         # Yearly archive: move previous FY data from active to archive prefix
         if config.cloud_archive.enabled and config.cloud_backup.enabled:
             try:
-                from datetime import datetime, timezone
                 today = datetime.now(timezone.utc)
                 today_md = today.strftime("%m-%d")
                 trigger_md = config.cloud_archive.trigger_date
@@ -629,7 +607,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
         # Generate weekly/monthly reports on scheduled days
         try:
-            from datetime import datetime, timezone
             today = datetime.now(timezone.utc)
             today_name = today.strftime("%A").lower()
 
@@ -669,7 +646,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
         # Backup config.yaml to LAN and cloud destinations
         try:
-            from tasks.config_backup_task import backup_config_task
             backup_config_task(
                 config_path=config_path,
                 lan_destination=config.paths.lan_destination,

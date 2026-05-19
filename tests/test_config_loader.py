@@ -100,3 +100,102 @@ def test_missing_gcs_credential_raises(temp_config_path, temp_dir, mocker):
 
     with pytest.raises(ConfigurationError, match="not found"):
         get_gcs_key_path("BackupAgent_GCS")
+
+
+def test_backup_destinations_both_enabled(temp_config):
+    """backup_destinations shows both enabled when defaults are used."""
+    dest = temp_config.backup_destinations
+    assert dest["lan"]["enabled"] is True
+    assert dest["cloud"]["enabled"] is False
+    assert dest["any_enabled"] is True
+    assert dest["all_disabled"] is False
+    assert dest["warning"] is None
+
+
+def test_backup_destinations_both_disabled(temp_config_path, temp_dir):
+    """backup_destinations warns when both LAN and cloud are disabled."""
+    config = {
+        "firm": {"name": "Test Firm"},
+        "paths": {
+            "source_drive": str(temp_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(temp_dir / "logs"),
+            "database_path": str(temp_dir / "manifest.db"),
+        },
+        "lan_backup": {"enabled": False},
+        "cloud_backup": {"enabled": False},
+    }
+    config_path = temp_dir / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    loaded = load_config(config_path)
+    dest = loaded.backup_destinations
+    assert dest["lan"]["enabled"] is False
+    assert dest["cloud"]["enabled"] is False
+    assert dest["any_enabled"] is False
+    assert dest["all_disabled"] is True
+    assert "Both LAN and Cloud backup are disabled" in dest["warning"]
+
+
+def test_validate_backup_destinations_both_disabled(temp_config_path, temp_dir):
+    """validate_backup_destinations returns error when both disabled."""
+    config = {
+        "firm": {"name": "Test Firm"},
+        "paths": {
+            "source_drive": str(temp_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(temp_dir / "logs"),
+            "database_path": str(temp_dir / "manifest.db"),
+        },
+        "lan_backup": {"enabled": False},
+        "cloud_backup": {"enabled": False},
+    }
+    config_path = temp_dir / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    loaded = load_config(config_path)
+    issues = loaded.validate_backup_destinations()
+    assert len(issues) == 1
+    assert "CRITICAL" in issues[0]
+
+
+def test_validate_backup_destinations_lan_only(temp_config_path, temp_dir):
+    """validate_backup_destinations OK when only LAN is enabled."""
+    config = {
+        "firm": {"name": "Test Firm"},
+        "paths": {
+            "source_drive": str(temp_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(temp_dir / "logs"),
+            "database_path": str(temp_dir / "manifest.db"),
+        },
+        "lan_backup": {"enabled": True},
+        "cloud_backup": {"enabled": False},
+    }
+    config_path = temp_dir / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    loaded = load_config(config_path)
+    issues = loaded.validate_backup_destinations()
+    assert len(issues) == 0
+
+
+def test_validate_backup_destinations_cloud_only(temp_config_path, temp_dir):
+    """validate_backup_destinations OK when only cloud is enabled."""
+    config = {
+        "firm": {"name": "Test Firm"},
+        "paths": {
+            "source_drive": str(temp_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(temp_dir / "logs"),
+            "database_path": str(temp_dir / "manifest.db"),
+        },
+        "lan_backup": {"enabled": False},
+        "cloud_backup": {"enabled": True, "bucket": "my-bucket"},
+    }
+    config_path = temp_dir / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    loaded = load_config(config_path)
+    issues = loaded.validate_backup_destinations()
+    assert len(issues) == 0

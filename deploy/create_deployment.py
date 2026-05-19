@@ -10,7 +10,6 @@ Creates a deployment named 'nightly-backup-production' with:
 - Default parameters
 """
 
-import sys
 from pathlib import Path
 
 import typer

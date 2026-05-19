@@ -1,10 +1,7 @@
 """Tests for post-backup verification (core/verify.py)."""
 
-import subprocess
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from core.verify import (
     verify_lan_checksums,

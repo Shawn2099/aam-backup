@@ -8,7 +8,6 @@ This is a one-time setup step for new deployments.
 """
 
 import subprocess
-import sys
 from pathlib import Path
 
 import typer

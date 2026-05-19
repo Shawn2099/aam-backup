@@ -16,8 +16,10 @@ from core.preflight import run_preflight_checks
 def preflight_task(config: dict) -> dict:
     """Run comprehensive pre-flight checks before backup starts.
 
+    Accepts a config dict (from AppConfig.model_dump()) for check compatibility.
+    Returns only the report — the caller keeps the original AppConfig object.
+
     Returns a dict with:
-        - config: The original config (if checks pass)
         - report: The PreflightReport as a dictionary
         - all_passed: Boolean indicating if all checks passed
 
@@ -45,7 +47,6 @@ def preflight_task(config: dict) -> dict:
     )
 
     return {
-        "config": config,
         "report": report.to_dict(),
         "all_passed": True,
     }

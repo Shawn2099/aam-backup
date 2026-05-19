@@ -6,7 +6,7 @@ from pathlib import Path
 from prefect import task
 from prefect.logging import get_run_logger
 
-from core.rclone import _write_temp_config, _write_filter_file
+from core.rclone import _write_temp_config
 
 
 @task(

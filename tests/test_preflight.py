@@ -3,10 +3,8 @@
 import json
 import socket
 import subprocess
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 from core.preflight import (
     Severity,
@@ -698,7 +696,7 @@ def test_check_binaries_linux():
     """check_binaries skips robocopy on Linux."""
     with patch("platform.system", return_value="Linux"):
         with patch("shutil.which", return_value="/usr/bin/rclone"):
-            results = check_binaries()
+            results = check_binaries(cloud_enabled=True)
             robocopy_check = next(r for r in results if r.name == "Robocopy")
             assert robocopy_check.severity == Severity.SKIP
 
@@ -707,12 +705,20 @@ def test_check_binaries_linux():
 
 
 def test_check_binaries_rclone_missing():
-    """check_binaries fails when rclone not found."""
+    """check_binaries fails when rclone not found and cloud enabled."""
     with patch("platform.system", return_value="Linux"):
         with patch("shutil.which", return_value=None):
-            results = check_binaries()
+            results = check_binaries(cloud_enabled=True)
             rclone_check = next(r for r in results if r.name == "Rclone")
             assert rclone_check.severity == Severity.FAIL
+
+
+def test_check_binaries_rclone_skipped_when_cloud_disabled():
+    """check_binaries skips rclone when cloud backup is disabled."""
+    with patch("platform.system", return_value="Linux"):
+        results = check_binaries(cloud_enabled=False)
+        rclone_check = next(r for r in results if r.name == "Rclone")
+        assert rclone_check.severity == Severity.SKIP
 
 
 def test_check_binaries_python_version():

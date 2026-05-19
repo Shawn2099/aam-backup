@@ -9,7 +9,6 @@ Prompts for credentials interactively and stores them securely.
 
 import getpass
 import subprocess
-import sys
 from pathlib import Path
 
 import typer
@@ -51,7 +50,7 @@ def gcs(
         raise typer.Exit(1)
 
     try:
-        cmd = ["cmdkey", f"/add:{name}", f"/user:service_account", f"/pass:{path.resolve()}"]
+        cmd = ["cmdkey", f"/add:{name}", "/user:service_account", f"/pass:{path.resolve()}"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             typer.echo(f"  GCS credential '{name}' stored successfully.")

@@ -15,19 +15,58 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.cache = None  # Disable template caching
 
 
-def _load_prefect_api_url() -> str:
-    """Load Prefect API URL from config.yaml, falling back to default."""
+def _load_config() -> dict:
+    """Load config.yaml and return as dict."""
     config_path = Path(__file__).parent.parent / "config.yaml"
     if config_path.exists():
         try:
             with open(config_path) as f:
-                config = yaml.safe_load(f)
-            return config.get("ui", {}).get(
-                "prefect_api_url", "http://127.0.0.1:4200/api"
-            )
+                return yaml.safe_load(f)
         except Exception:
             pass
-    return "http://127.0.0.1:4200/api"
+    return {}
+
+
+def _load_prefect_api_url() -> str:
+    """Load Prefect API URL from config.yaml, falling back to default."""
+    config = _load_config()
+    return config.get("ui", {}).get(
+        "prefect_api_url", "http://127.0.0.1:4200/api"
+    )
+
+
+def _get_backup_destinations() -> dict:
+    """Return backup destination status from config (no Pydantic needed for UI)."""
+    config = _load_config()
+    lan = config.get("lan_backup", {})
+    cloud = config.get("cloud_backup", {})
+    paths = config.get("paths", {})
+
+    lan_enabled = lan.get("enabled", True)
+    cloud_enabled = cloud.get("enabled", True)
+    any_enabled = lan_enabled or cloud_enabled
+    all_disabled = not any_enabled
+
+    warning = None
+    if all_disabled:
+        warning = "Both LAN and Cloud backup are disabled. No data will be backed up."
+
+    return {
+        "lan": {
+            "enabled": lan_enabled,
+            "label": "LAN Backup",
+            "destination": paths.get("lan_destination", ""),
+        },
+        "cloud": {
+            "enabled": cloud_enabled,
+            "label": "Cloud Backup",
+            "provider": cloud.get("provider", "gcs"),
+            "bucket": cloud.get("bucket", ""),
+        },
+        "any_enabled": any_enabled,
+        "all_disabled": all_disabled,
+        "warning": warning,
+    }
 
 
 @app.get("/health")
@@ -55,6 +94,7 @@ async def health():
 async def index(request: Request):
     """Serve the status page with last run info and next scheduled run."""
     prefect_api_url = _load_prefect_api_url()
+    destinations = _get_backup_destinations()
 
     last_run = None
     next_run = None
@@ -100,8 +140,15 @@ async def index(request: Request):
             "next_run": next_run,
             "in_progress": in_progress,
             "prefect_api_url": prefect_api_url,
+            "destinations": destinations,
         },
     )
+
+
+@app.get("/config", response_class=JSONResponse)
+async def get_config():
+    """Return backup destination configuration status."""
+    return _get_backup_destinations()
 
 
 @app.post("/trigger")

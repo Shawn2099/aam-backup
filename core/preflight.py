@@ -317,7 +317,7 @@ def check_source_drive(path: str) -> CheckResult:
 
         # Check readability — test a single file instead of loading entire directory
         try:
-            first_entry = next(source.iterdir(), None)
+            _ = next(source.iterdir(), None)
         except PermissionError:
             return CheckResult(
                 category="Storage",
@@ -467,7 +467,7 @@ def check_lan_destination_capacity(source_path: str, lan_path: str, min_free_gb:
         source_usage = shutil.disk_usage(str(source))
         lan_usage = shutil.disk_usage(str(lan_dest))
 
-        source_total_gb = source_usage.total / (1024 ** 3)
+        _source_total_gb = source_usage.total / (1024 ** 3)
         source_used_gb = source_usage.used / (1024 ** 3)
         lan_free_gb = lan_usage.free / (1024 ** 3)
 
@@ -681,7 +681,7 @@ def check_credential_manager(credential_name: str) -> CheckResult:
                 category="Credentials",
                 name=f"Credential ({credential_name})",
                 severity=Severity.FAIL,
-                message=f"Not found in Credential Manager",
+                message="Not found in Credential Manager",
             )
     except ImportError:
         return CheckResult(
@@ -1157,7 +1157,7 @@ def check_database(db_path: str) -> CheckResult:
             category="Database",
             name="Manifest DB",
             severity=Severity.PASS,
-            message=f"Directory writable, database will be created",
+            message="Directory writable, database will be created",
         )
     except Exception as e:
         return CheckResult(
@@ -1195,7 +1195,7 @@ def check_log_directory(log_path: str) -> CheckResult:
 
 # ─── Binary Checks ──────────────────────────────────────────────────────
 
-def check_binaries() -> list[CheckResult]:
+def check_binaries(cloud_enabled: bool = False) -> list[CheckResult]:
     """Check that required binaries are available with versions."""
     results = []
 
@@ -1224,21 +1224,29 @@ def check_binaries() -> list[CheckResult]:
             message="Skipped (Linux dev mode)",
         ))
 
-    # Rclone
-    rclone_path = shutil.which("rclone")
-    if rclone_path:
-        results.append(CheckResult(
-            category="Binaries",
-            name="Rclone",
-            severity=Severity.PASS,
-            message=f"Found at {rclone_path}",
-        ))
+    # Rclone (only if cloud backup enabled)
+    if cloud_enabled:
+        rclone_path = shutil.which("rclone")
+        if rclone_path:
+            results.append(CheckResult(
+                category="Binaries",
+                name="Rclone",
+                severity=Severity.PASS,
+                message=f"Found at {rclone_path}",
+            ))
+        else:
+            results.append(CheckResult(
+                category="Binaries",
+                name="Rclone",
+                severity=Severity.FAIL,
+                message="Not found in PATH",
+            ))
     else:
         results.append(CheckResult(
             category="Binaries",
             name="Rclone",
-            severity=Severity.FAIL,
-            message="Not found in PATH",
+            severity=Severity.SKIP,
+            message="Skipped (cloud backup disabled)",
         ))
 
     # Python version
@@ -1369,8 +1377,9 @@ def run_preflight_checks(config: dict) -> PreflightReport:
         report.checks.append(check_dns_resolution("storage.googleapis.com"))
 
     # Binaries
-    report.checks.extend(check_binaries())
-    report.checks.append(check_rclone_version())
+    report.checks.extend(check_binaries(cloud.get("enabled", False)))
+    if cloud.get("enabled", False):
+        report.checks.append(check_rclone_version())
 
     # Credentials
     report.checks.append(check_credential_manager(config.get("cloud_credentials", {}).get("credential_name", "")))
@@ -1386,7 +1395,7 @@ def run_preflight_checks(config: dict) -> PreflightReport:
         # Validate GCS key file before connectivity check
         from core.config_loader import load_config
         try:
-            full_config = load_config(Path(__file__).parent.parent / "config.yaml")
+            _ = load_config(Path(__file__).parent.parent / "config.yaml")
             gcs_key_path = None
             # Try to get key path from credential manager
             try:
