@@ -7,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import text, select, update, delete
 
-from models.manifest_model import Base, FileManifest, create_engine_with_wal
+from models.manifest_model import Base, FileManifest, PENDING_CHECKSUM, create_engine_with_wal
 
 
 class DatabaseError(Exception):
@@ -108,7 +108,7 @@ class ManifestDB:
         relative_path: str,
         file_size: int,
         last_modified_timestamp: float,
-        checksum: str = "pending",
+        checksum: str = PENDING_CHECKSUM,
     ) -> FileManifest:
         """Insert or update a manifest entry. Acquires write lock."""
         with self._lock:
@@ -267,6 +267,38 @@ class ManifestDB:
     def close(self):
         """Dispose the engine. Call when shutting down."""
         self._engine.dispose()
+
+    def get_and_increment_run_counter(self) -> int:
+        """Get and increment a persistent run counter in the database.
+
+        Thread-safe — acquires the write lock. Used instead of a file-based
+        counter to eliminate read-then-write races.
+
+        Returns:
+            Current run number (1-based) after incrementing.
+        """
+        with self._lock:
+            session = self._get_session()
+            try:
+                session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS run_counter (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        value INTEGER NOT NULL DEFAULT 0
+                    )
+                """))
+                session.commit()
+                session.execute(text(
+                    "INSERT INTO run_counter (id, value) VALUES (1, 1) "
+                    "ON CONFLICT(id) DO UPDATE SET value = value + 1"
+                ))
+                session.commit()
+                row = session.execute(text("SELECT value FROM run_counter WHERE id = 1")).fetchone()
+                return row[0] if row else 1
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
 
     def maintenance(self, max_size_mb: int = 500) -> dict:
         """Perform SQLite maintenance: VACUUM, WAL checkpoint, size check.

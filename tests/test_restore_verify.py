@@ -149,8 +149,8 @@ class TestRestoreTask:
     def test_skips_when_all_pending(self, tmp_path):
         db_path = tmp_path / "manifest.db"
         db = ManifestDB(db_path)
-        db.upsert_entry("file1.txt", 100, 1700000000.0, checksum="pending")
-        db.upsert_entry("file2.txt", 200, 1700000001.0, checksum="pending")
+        db.upsert_entry("file1.txt", 100, 1700000000.0)
+        db.upsert_entry("file2.txt", 200, 1700000001.0)
         db.close()
 
         result = restore_task(

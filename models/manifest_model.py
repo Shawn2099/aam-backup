@@ -3,6 +3,9 @@
 from sqlalchemy import BigInteger, Column, Index, Integer, REAL, Text, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
+PENDING_CHECKSUM = "pending"
+"""Sentinel value for files whose checksum has not been computed yet."""
+
 
 class Base(DeclarativeBase):
     pass
@@ -15,7 +18,7 @@ class FileManifest(Base):
     relative_path = Column(Text, nullable=False, unique=True)
     file_size = Column(BigInteger, nullable=False)
     last_modified_timestamp = Column(REAL, nullable=False)
-    checksum = Column(Text, nullable=False, default="pending")
+    checksum = Column(Text, nullable=False, default=PENDING_CHECKSUM)
     last_seen_at = Column(Text, nullable=False)
     last_backed_up_lan = Column(Text, nullable=True)
     last_backed_up_cloud = Column(Text, nullable=True)

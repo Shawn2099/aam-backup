@@ -9,6 +9,7 @@ from loguru import logger
 from core.manifest_db import ManifestDB
 from core.hashing import compute_checksum
 from models.config_model import AppConfig
+from models.manifest_model import PENDING_CHECKSUM
 from models.scan_result import ScanResult
 
 
@@ -84,7 +85,7 @@ def _write_temp_config(temp_dir: Path, job_id: str, gcs_key_path: str, gcs_locat
     content = (
         "[gcs_backup]\n"
         "type = google cloud storage\n"
-        f"service_account_file = {gcs_key_path}\n"
+        f"service_account_file = {gcs_key_path.replace(chr(92), '/')}\n"
         "bucket_policy_only = true\n"
         f"location = {gcs_location}\n"
     )
@@ -387,7 +388,7 @@ def run_rclone(
             # Compute checksums for new files that were successfully backed up (if not already done by LAN backup)
             for file_info in scan_result.new_files:
                 entry = db.get_entry(file_info.relative_path)
-                if entry and entry.checksum == "pending":
+                if entry and entry.checksum == PENDING_CHECKSUM:
                     try:
                         full_path = Path(paths_config.source_drive) / file_info.relative_path
                         checksum = compute_checksum(full_path)

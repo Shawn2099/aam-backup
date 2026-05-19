@@ -1,21 +1,19 @@
 """Prefect flow: nightly backup orchestration."""
 
 import logging
-import os
 import shutil
 import time
-import keyring
 from datetime import datetime, timezone
-from pathlib import Path
-from prefect_email import EmailServerCredentials, email_send_message
 
 from prefect import flow
 from prefect.context import get_run_context
 from prefect.logging import get_run_logger
 from prefect.task_runners import ThreadPoolTaskRunner
+from prefect_email import EmailServerCredentials, email_send_message
 
 from core.config_loader import load_config
 from core.logging_setup import configure_logging
+from core.manifest_db import ManifestDB
 from tasks.archive_task import yearly_archive_task
 from tasks.cloud_task import cloud_backup_task
 from tasks.config_backup_task import backup_config_task
@@ -40,144 +38,135 @@ from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
 _hook_logger = logging.getLogger(__name__)
 
 
-def _send_failure_email(config_path: str, flow_run_id: str, error_message: str):
-    """Send failure notification email using SMTP config from config.yaml or Prefect block."""
-    try:
-        config = load_config(config_path)
-        notif = config.notifications
+def _send_email_notification(
+    config_path: str,
+    flow_run_id: str,
+    subject_suffix: str,
+    is_failure: bool,
+    custom_message: str = "",
+) -> None:
+    """Send email notification using SMTP config from config.yaml or Prefect block.
 
-        if not notif.smtp_host or not notif.sender or not notif.recipients:
-            return  # Email not configured
-
-        # Retrieve SMTP password from Credential Manager
-        smtp_password = keyring.get_password("BackupAgent", notif.smtp_password_credential)
-        if not smtp_password:
-            return  # Credential not found
-
-        body_text = (
-            f"Backup Failure Notification\n"
-            f"{'=' * 40}\n\n"
-            f"Firm: {config.firm.name}\n"
-            f"Flow Run ID: {flow_run_id}\n"
-            f"Error: {error_message}\n\n"
-            f"Check Prefect UI for full details.\n"
-        )
-
-        body_html = f"""
-        <html><body>
-        <h2 style="color: red;">Backup Failure Notification</h2>
-        <table>
-            <tr><td><strong>Firm:</strong></td><td>{config.firm.name}</td></tr>
-            <tr><td><strong>Flow Run ID:</strong></td><td>{flow_run_id}</td></tr>
-            <tr><td><strong>Error:</strong></td><td><code>{error_message}</code></td></tr>
-        </table>
-        <p>Check Prefect UI for full details.</p>
-        </body></html>
-        """
-
-        try:
-            email_credentials = EmailServerCredentials.load("backup-email")
-        except Exception:
-            email_credentials = EmailServerCredentials(
-                username=notif.smtp_username,
-                password=smtp_password,
-                smtp_server=notif.smtp_host,
-                smtp_port=notif.smtp_port,
-                smtp_type="STARTTLS",
-            )
-
-        email_send_message.fn(
-            subject=f"Backup Failed — {config.firm.name}",
-            msg=body_html,
-            msg_plain=body_text,
-            email_server_credentials=email_credentials,
-            email_from=notif.sender,
-            email_to=notif.recipients,
-        )
-
-    except Exception as e:
-        _hook_logger.error(f"Failed to send failure email: {e}")
-
-
-def _send_success_email(config_path: str, flow_run_id: str, status: str, duration: float):
-    """Send success notification email using SMTP config from config.yaml or Prefect block."""
-    try:
-        config = load_config(config_path)
-        notif = config.notifications
-
-        if not notif.smtp_host or not notif.sender or not notif.recipients:
-            return
-
-        smtp_password = keyring.get_password("BackupAgent", notif.smtp_password_credential)
-        if not smtp_password:
-            return
-
-        hours = int(duration // 3600)
-        minutes = int((duration % 3600) // 60)
-        seconds = int(duration % 60)
-        duration_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
-
-        body_text = (
-            f"Backup Success Notification\n"
-            f"{'=' * 40}\n\n"
-            f"Firm: {config.firm.name}\n"
-            f"Flow Run ID: {flow_run_id}\n"
-            f"Status: {status}\n"
-            f"Duration: {duration_str}\n"
-        )
-
-        body_html = f"""
-        <html><body>
-        <h2 style="color: green;">Backup Success Notification</h2>
-        <table>
-            <tr><td><strong>Firm:</strong></td><td>{config.firm.name}</td></tr>
-            <tr><td><strong>Flow Run ID:</strong></td><td>{flow_run_id}</td></tr>
-            <tr><td><strong>Status:</strong></td><td>{status}</td></tr>
-            <tr><td><strong>Duration:</strong></td><td>{duration_str}</td></tr>
-        </table>
-        </body></html>
-        """
-
-        try:
-            email_credentials = EmailServerCredentials.load("backup-email")
-        except Exception:
-            email_credentials = EmailServerCredentials(
-                username=notif.smtp_username,
-                password=smtp_password,
-                smtp_server=notif.smtp_host,
-                smtp_port=notif.smtp_port,
-                smtp_type="STARTTLS",
-            )
-
-        email_send_message.fn(
-            subject=f"Backup Complete — {config.firm.name}",
-            msg=body_html,
-            msg_plain=body_text,
-            email_server_credentials=email_credentials,
-            email_from=notif.sender,
-            email_to=notif.recipients,
-        )
-
-    except Exception as e:
-        _hook_logger.error(f"Failed to send success email: {e}")
-
-
-def _get_and_increment_run_counter(log_directory: str) -> int:
-    """Get and increment a persistent run counter from a file.
-
-    Returns the current run number (1-based).
-    File is created if it doesn't exist.
+    Args:
+        config_path: Path to config.yaml.
+        flow_run_id: Prefect flow run ID.
+        subject_suffix: Text to append after "Backup Failed — " or "Backup Complete — ".
+        is_failure: True for failure email, False for success.
+        custom_message: Optional error message or status string.
     """
-    counter_file = Path(log_directory) / "run_counter.txt"
-    counter_file.parent.mkdir(parents=True, exist_ok=True)
-
     try:
-        current = int(counter_file.read_text().strip())
-    except (FileNotFoundError, ValueError):
-        current = 0
+        config = load_config(config_path)
+        notif = config.notifications
 
-    counter_file.write_text(str(current + 1))
-    return current + 1
+        if not notif.smtp_host or not notif.sender or not notif.recipients:
+            return
+
+        try:
+            import keyring
+            smtp_password = keyring.get_password("BackupAgent", notif.smtp_password_credential)
+        except Exception:
+            _hook_logger.warning(
+                "keyring.get_password failed — email notifications may be unavailable "
+                "if keyring backend is not configured"
+            )
+            return
+
+        if not smtp_password:
+            return
+
+        status_label = "Failed" if is_failure else "Complete"
+        color = "red" if is_failure else "green"
+        firm_name = config.firm.name
+        subject = f"Backup {status_label} — {subject_suffix}"
+
+        if is_failure:
+            body_text = (
+                f"Backup Failure Notification\n"
+                f"{'=' * 40}\n\n"
+                f"Firm: {firm_name}\n"
+                f"Flow Run ID: {flow_run_id}\n"
+                f"Error: {custom_message}\n\n"
+                f"Check Prefect UI for full details.\n"
+            )
+            body_html = f"""
+            <html><body>
+            <h2 style="color: {color};">Backup Failure Notification</h2>
+            <table>
+                <tr><td><strong>Firm:</strong></td><td>{firm_name}</td></tr>
+                <tr><td><strong>Flow Run ID:</strong></td><td>{flow_run_id}</td></tr>
+                <tr><td><strong>Error:</strong></td><td><code>{custom_message}</code></td></tr>
+            </table>
+            <p>Check Prefect UI for full details.</p>
+            </body></html>
+            """
+        else:
+            body_text = (
+                f"Backup Success Notification\n"
+                f"{'=' * 40}\n\n"
+                f"Firm: {firm_name}\n"
+                f"Flow Run ID: {flow_run_id}\n"
+                f"Status: {custom_message}\n"
+            )
+            body_html = f"""
+            <html><body>
+            <h2 style="color: {color};">Backup Success Notification</h2>
+            <table>
+                <tr><td><strong>Firm:</strong></td><td>{firm_name}</td></tr>
+                <tr><td><strong>Flow Run ID:</strong></td><td>{flow_run_id}</td></tr>
+                <tr><td><strong>Status:</strong></td><td>{custom_message}</td></tr>
+            </table>
+            </body></html>
+            """
+
+        try:
+            email_credentials = EmailServerCredentials.load("backup-email")
+        except Exception:
+            email_credentials = EmailServerCredentials(
+                username=notif.smtp_username,
+                password=smtp_password,
+                smtp_server=notif.smtp_host,
+                smtp_port=notif.smtp_port,
+                smtp_type="STARTTLS",
+            )
+
+        email_send_message.fn(
+            subject=subject,
+            msg=body_html,
+            msg_plain=body_text,
+            email_server_credentials=email_credentials,
+            email_from=notif.sender,
+            email_to=notif.recipients,
+        )
+
+    except Exception as e:
+        _hook_logger.error(f"Failed to send email notification: {e}")
+
+
+def _send_failure_email(config_path: str, flow_run_id: str, error_message: str) -> None:
+    """Send failure notification email."""
+    _send_email_notification(
+        config_path=config_path,
+        flow_run_id=flow_run_id,
+        subject_suffix=error_message[:50] if error_message else "Unknown",
+        is_failure=True,
+        custom_message=error_message,
+    )
+
+
+def _send_success_email(config_path: str, flow_run_id: str, status: str, duration: float) -> None:
+    """Send success notification email."""
+    hours = int(duration // 3600)
+    minutes = int((duration % 3600) // 60)
+    seconds = int(duration % 60)
+    duration_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
+
+    _send_email_notification(
+        config_path=config_path,
+        flow_run_id=flow_run_id,
+        subject_suffix=status,
+        is_failure=False,
+        custom_message=f"{status} — Duration: {duration_str}",
+    )
 
 
 def _on_backup_failure(flow_obj, flow_run, state):
@@ -240,9 +229,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
     start_time = time.time()
 
-    log_dir = Path(os.environ.get("BACKUP_LOG_DIR", "logs"))
-    configure_logging(log_dir)
-
     try:
         # Track VSS state for cleanup (must survive exceptions)
         vss_enabled = False
@@ -250,6 +236,9 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
 
         # Task 1: Load configuration
         config, gcs_key_path = load_config_task(config_path)
+
+        # Configure logging now that we know the correct directory
+        configure_logging(config.paths.log_directory)
 
         # Validate at least one backup destination is enabled
         dest_issues = config.validate_backup_destinations()
@@ -342,16 +331,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         # Task 2: Pre-flight checks (report only — keep original config object)
         _ = preflight_task(config.model_dump())
 
-        # Apply VSS source path if shadow copy is active
-        if vss_enabled and vss_device_path:
-            config = config.model_copy(
-                update={
-                    "paths": config.paths.model_copy(
-                        update={"source_drive": vss_device_path}
-                    )
-                }
-            )
-
         # Task 3: Scan drive
         scan_result = scan_task(config, config.paths.database_path)
 
@@ -402,6 +381,31 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
                 logger.warning(f"Metrics collection failed (non-critical): {e}")
 
             return "COMPLETE"
+
+        # Pre-backup check: LAN destination free space guard
+        if config.lan_backup.enabled:
+            try:
+                lan_free = shutil.disk_usage(config.paths.lan_destination).free
+                lan_free_gb = lan_free / (1024 ** 3)
+                threshold_gb = config.alerts.lan_free_space_warning_gb
+                if lan_free_gb < threshold_gb:
+                    logger.warning(
+                        f"LAN destination low on space BEFORE backup: "
+                        f"{lan_free_gb:.1f} GB free (threshold: {threshold_gb} GB)"
+                    )
+                    if not config.cloud_backup.enabled:
+                        raise RuntimeError(
+                            f"LAN destination critically low on space "
+                            f"({lan_free_gb:.1f} GB free, need {threshold_gb} GB) "
+                            f"and cloud backup is disabled — aborting to prevent failures"
+                        )
+                else:
+                    logger.info(
+                        f"LAN destination has {lan_free_gb:.1f} GB free "
+                        f"(threshold: {threshold_gb} GB) — proceeding with backup"
+                    )
+            except Exception as e:
+                logger.debug(f"Could not check LAN disk space before backup: {e}")
 
         # Tasks 4 & 5: Concurrent LAN and cloud backup
         lan_future = lan_backup_task.submit(config, scan_result, config.paths.database_path)
@@ -524,19 +528,6 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         except Exception as e:
             logger.warning(f"Manifest DB maintenance failed (non-critical): {e}")
 
-        # Check LAN destination free space and warn if approaching capacity
-        try:
-            lan_free = shutil.disk_usage(config.paths.lan_destination).free
-            lan_free_gb = lan_free / (1024 ** 3)
-            threshold_gb = config.alerts.lan_free_space_warning_gb
-            if lan_free_gb < threshold_gb:
-                logger.warning(
-                    f"LAN destination low on space: {lan_free_gb:.1f} GB free "
-                    f"(threshold: {threshold_gb} GB)"
-                )
-        except Exception as e:
-            logger.debug(f"Could not check LAN disk space: {e}")
-
         # Check backup duration and warn if unusually slow
         duration_minutes = duration / 60
         duration_threshold = config.alerts.backup_duration_warning_minutes
@@ -591,7 +582,9 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
         # Test restore: verify random files from LAN and GCS
         if config.test_restore.enabled:
             try:
-                run_counter = _get_and_increment_run_counter(config.paths.log_directory)
+                db = ManifestDB(config.paths.database_path)
+                run_counter = db.get_and_increment_run_counter()
+                db.close()
                 if run_counter % config.test_restore.run_every_n_backups == 0:
                     logger.info(
                         f"Running test restore verification "

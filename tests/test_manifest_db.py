@@ -2,6 +2,8 @@
 
 import threading
 
+from models.manifest_model import PENDING_CHECKSUM
+
 
 
 
@@ -23,7 +25,7 @@ def test_upsert_creates_new_entry(temp_db, sample_file_info):
     )
     assert entry.relative_path == sample_file_info["relative_path"]
     assert entry.file_size == sample_file_info["file_size"]
-    assert entry.checksum == "pending"
+    assert entry.checksum == PENDING_CHECKSUM
     assert entry.file_id is not None
 
 

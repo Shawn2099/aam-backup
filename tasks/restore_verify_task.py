@@ -10,6 +10,7 @@ from prefect.logging import get_run_logger
 
 from core.manifest_db import ManifestDB
 from core.rclone import _write_temp_config
+from models.manifest_model import PENDING_CHECKSUM
 
 
 @task(
@@ -66,11 +67,11 @@ def test_restore_task(
         logger.warning("Manifest is empty, skipping test restore")
         return {"status": "SKIPPED", "reason": "empty manifest"}
 
-    # Filter to files with confirmed backups (not "pending" checksum)
+    # Filter to files with confirmed backups (not PENDING_CHECKSUM checksum)
     backed_up = {
         path: entry
         for path, entry in all_entries.items()
-        if entry.checksum != "pending"
+        if entry.checksum != PENDING_CHECKSUM
     }
 
     if not backed_up:

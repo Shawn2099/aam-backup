@@ -1,11 +1,16 @@
-"""Scanner — walks source drive, classifies files as new/modified/unchanged/deleted."""
+"""Scanner — walks source drive, classifies files as new/modified/unchanged/deleted.
 
-import os
+Uses pathlib.Path.walk (Python 3.12+) for directory traversal with top-down
+pruning, maintaining pathlib.Path objects throughout while retaining the
+performance characteristics of os.walk's in-place dirnames mutation.
+"""
+
 from pathlib import Path
 
 from core.hashing import compute_checksum
 from core.manifest_db import ManifestDB
 from models.config_model import AppConfig
+from models.manifest_model import PENDING_CHECKSUM
 from models.scan_result import FileInfo, ScanResult
 
 
@@ -67,7 +72,7 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
 
     Algorithm:
     1. Load all manifest entries into memory once (bulk read).
-    2. os.walk with topdown=True for in-place dirnames pruning.
+    2. Path.walk with top_down=True for in-place dirnames pruning.
     3. For each file: extension check → pattern check → stat → in-memory manifest lookup.
     4. Classify as new, modified, or unchanged.
     5. After walk: detect deleted files (in manifest but not on disk).
@@ -99,13 +104,11 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
     source_str = str(source)
     is_vss_path = source_str.startswith("\\\\?\\") or source_str.startswith("\\\\")
 
-    for dirpath, dirnames, filenames in os.walk(source, topdown=True):
-        current_dir = Path(dirpath)
-
-        # Prune excluded folders in-place (critical for os.walk descent)
+    for dirpath, dirnames, filenames in source.walk(top_down=True):
+        # Prune excluded folders in-place (critical for top-down descent)
         dirnames[:] = [
             d for d in dirnames
-            if not is_excluded_folder(current_dir / d, exclude_folders)
+            if not is_excluded_folder(dirpath / d, exclude_folders)
         ]
 
         for filename in filenames:
@@ -117,7 +120,7 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
             if is_excluded_pattern(filename, exclude_patterns):
                 continue
 
-            full_path = current_dir / filename
+            full_path = dirpath / filename
 
             # Step 3: stat
             try:
@@ -160,7 +163,7 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                     relative_path=relative_path,
                     file_size=stat_result.st_size,
                     last_modified_timestamp=stat_result.st_mtime,
-                    checksum="pending",
+                    checksum=PENDING_CHECKSUM,
                 )
                 # Update cache so subsequent scans in same run see it
                 new_entry = db.get_entry(relative_path)

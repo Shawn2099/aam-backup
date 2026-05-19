@@ -51,3 +51,4 @@ graphify-out/
 
 # Mypy output
 mypy_out.txt
+.gitnexus

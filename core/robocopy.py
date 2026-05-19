@@ -11,6 +11,7 @@ from loguru import logger
 from core.manifest_db import ManifestDB
 from core.hashing import compute_checksum
 from models.config_model import AppConfig
+from models.manifest_model import PENDING_CHECKSUM
 from models.scan_result import ScanResult
 
 
@@ -237,7 +238,7 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
                 if file_info.relative_path in failed_paths:
                     continue
                 entry = db.get_entry(file_info.relative_path)
-                if entry and entry.checksum == "pending":
+                if entry and entry.checksum == PENDING_CHECKSUM:
                     try:
                         full_path = Path(paths_config.source_drive) / file_info.relative_path
                         checksum = compute_checksum(full_path)
