@@ -4,11 +4,25 @@ Designed to coexist with Prefect's APILogHandler. Never removes
 handlers we don't own, so Prefect API logging is never disrupted.
 """
 
+import logging as _logging
 from pathlib import Path
 
 from loguru import logger
+from prefect.logging import get_run_logger
+from prefect.exceptions import MissingContextError
 
 _handler_ids: list[int] = []
+
+
+def get_task_logger():
+    """Get Prefect run logger, falling back to standard logger if no context.
+
+    Safe to call from both Prefect tasks and non-Prefect contexts (tests, scripts).
+    """
+    try:
+        return get_run_logger()
+    except MissingContextError:
+        return _logging.getLogger(__name__)
 
 
 def configure_logging(log_dir: str | Path, rotation: str = "1 day", retention: str = "30 days", enqueue: bool = True):

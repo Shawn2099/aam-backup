@@ -6,16 +6,8 @@ from prefect.logging import get_run_logger
 from prefect.exceptions import MissingContextError
 
 from core.config_loader import load_config, get_gcs_key_path
+from core.logging_setup import get_task_logger
 from models.config_model import AppConfig
-
-
-def _get_logger():
-    """Get Prefect run logger, falling back to standard logger if no context."""
-    try:
-        return get_run_logger()
-    except MissingContextError:
-        import logging
-        return logging.getLogger(__name__)
 
 
 @task(
@@ -34,7 +26,7 @@ def load_config_task(config_path: str) -> tuple[AppConfig, str]:
     Returns:
         Tuple of (AppConfig, gcs_key_path).
     """
-    logger = _get_logger()
+    logger = get_task_logger()
     logger.info(f"Loading configuration from {config_path}")
 
     config = load_config(config_path)

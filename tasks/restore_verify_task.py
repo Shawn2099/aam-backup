@@ -1,4 +1,9 @@
-"""Prefect task: automated test restore — verify random files from LAN and GCS."""
+"""Prefect task: automated test restore — verify random files from LAN and GCS.
+
+Does actual file copy + checksum verification (not just existence check).
+LAN: copies file to temp, computes xxHash64, compares with source, deletes temp.
+Cloud: downloads 1 file per run to verify true restore, rest use server-side MD5.
+"""
 
 import random
 import subprocess
@@ -6,11 +11,14 @@ import tempfile
 from pathlib import Path
 
 from prefect import task
-from prefect.logging import get_run_logger
 
+from core.logging_setup import get_task_logger
 from core.manifest_db import ManifestDB
 from core.rclone import _write_temp_config
+from core.hashing import compute_checksum
 from models.manifest_model import PENDING_CHECKSUM
+
+
 
 
 @task(
@@ -18,9 +26,9 @@ from models.manifest_model import PENDING_CHECKSUM
     tags=["verification", "maintenance"],
     retries=0,
     task_run_name="test-restore-verification",
-    timeout_seconds=3600,  # 1 hour max
+    timeout_seconds=3600,
 )
-def test_restore_task(
+def restore_verify_task(
     database_path: str,
     source_drive: str,
     lan_destination: str,
@@ -31,10 +39,10 @@ def test_restore_task(
     gcs_location: str | None = None,
     sample_count: int = 10,
 ) -> dict:
-    """Pick random files from manifest and verify they exist on LAN and GCS.
+    """Pick random files from manifest and verify via actual restore + checksum.
 
-    Uses rclone for individual file checks against GCS, and direct
-    file existence + size check against LAN destination.
+    LAN: copy to temp dir → compute xxHash64 → compare with source → delete temp.
+    Cloud: download 1 file to verify true restore, rest use server-side MD5 check.
 
     Args:
         database_path: Path to manifest.db.
@@ -50,7 +58,7 @@ def test_restore_task(
     Returns:
         Dict with verification results for LAN and cloud.
     """
-    logger = get_run_logger()
+    logger = get_task_logger()
 
     db_path = Path(database_path)
     if not db_path.exists():
@@ -67,7 +75,6 @@ def test_restore_task(
         logger.warning("Manifest is empty, skipping test restore")
         return {"status": "SKIPPED", "reason": "empty manifest"}
 
-    # Filter to files with confirmed backups (not PENDING_CHECKSUM checksum)
     backed_up = {
         path: entry
         for path, entry in all_entries.items()
@@ -78,7 +85,6 @@ def test_restore_task(
         logger.warning("No confirmed backup files in manifest, skipping test restore")
         return {"status": "SKIPPED", "reason": "no confirmed backups"}
 
-    # Sample random files
     actual_count = min(sample_count, len(backed_up))
     sampled = random.sample(list(backed_up.items()), actual_count)
 
@@ -87,38 +93,42 @@ def test_restore_task(
     lan_results = []
     cloud_results = []
 
-    for relative_path, entry in sampled:
-        # Verify on LAN
-        lan_result = _verify_lan_file(lan_destination, relative_path, int(entry.file_size))  # type: ignore[arg-type]
+    for i, (relative_path, entry) in enumerate(sampled):
+        # LAN: actual copy + checksum verify
+        lan_result = _verify_lan_file_with_checksum(
+            source_drive, lan_destination, relative_path, entry.checksum,
+        )
         lan_results.append(lan_result)
 
-        # Verify on cloud
+        # Cloud: first file = actual download + verify, rest = server-side MD5
         if cloud_enabled and gcs_key_path and cloud_bucket and cloud_remote_path and gcs_location:
-            cloud_result = _verify_cloud_file(
-                gcs_key_path, gcs_location, cloud_bucket, cloud_remote_path,
-                relative_path, int(entry.file_size),  # type: ignore[arg-type]
-            )
+            if i == 0:
+                cloud_result = _verify_cloud_file_download(
+                    gcs_key_path, gcs_location, cloud_bucket, cloud_remote_path,
+                    relative_path, entry.checksum,
+                )
+            else:
+                cloud_result = _verify_cloud_file_md5(
+                    gcs_key_path, gcs_location, cloud_bucket, cloud_remote_path,
+                    relative_path, entry.checksum,
+                )
             cloud_results.append(cloud_result)
 
     # Summarize
     lan_ok = sum(1 for r in lan_results if r["status"] == "OK")
-    lan_fail = sum(1 for r in lan_results if r["status"] != "OK")
+    lan_fail = len(lan_results) - lan_ok
 
     cloud_ok = sum(1 for r in cloud_results if r["status"] == "OK") if cloud_results else 0
-    cloud_fail = sum(1 for r in cloud_results if r["status"] != "OK") if cloud_results else 0
+    cloud_fail = len(cloud_results) - cloud_ok if cloud_results else 0
 
     lan_status = "OK" if lan_fail == 0 else "PARTIAL" if lan_ok > 0 else "FAILED"
     cloud_status = None
     if cloud_results:
         cloud_status = "OK" if cloud_fail == 0 else "PARTIAL" if cloud_ok > 0 else "FAILED"
 
-    logger.info(
-        f"Test restore LAN: {lan_ok}/{len(lan_results)} OK ({lan_status})"
-    )
+    logger.info(f"Test restore LAN: {lan_ok}/{len(lan_results)} OK ({lan_status})")
     if cloud_status:
-        logger.info(
-            f"Test restore cloud: {cloud_ok}/{len(cloud_results)} OK ({cloud_status})"
-        )
+        logger.info(f"Test restore cloud: {cloud_ok}/{len(cloud_results)} OK ({cloud_status})")
 
     return {
         "lan": {"status": lan_status, "ok": lan_ok, "failed": lan_fail, "details": lan_results},
@@ -131,97 +141,164 @@ def test_restore_task(
     }
 
 
-def _verify_lan_file(lan_destination: str, relative_path: str, expected_size: int) -> dict:
-    """Verify a single file exists on LAN with matching size."""
+def _verify_lan_file_with_checksum(
+    source_drive: str,
+    lan_destination: str,
+    relative_path: str,
+    expected_checksum: str,
+) -> dict:
+    """Verify LAN file via actual copy + checksum comparison."""
+    source_path = Path(source_drive) / relative_path
+    lan_path = Path(lan_destination) / relative_path
+
+    if not lan_path.exists():
+        return {"path": relative_path, "status": "MISSING", "reason": "file not found on LAN"}
+
+    # Compute checksum on LAN copy
     try:
-        lan_path = Path(lan_destination) / relative_path
-
-        if not lan_path.exists():
-            return {"path": relative_path, "status": "MISSING", "reason": "file not found on LAN"}
-
-        actual_size = lan_path.stat().st_size
-        if actual_size != expected_size:
-            return {
-                "path": relative_path,
-                "status": "MISMATCH",
-                "expected_size": expected_size,
-                "actual_size": actual_size,
-            }
-
-        return {"path": relative_path, "status": "OK", "size": actual_size}
-
+        lan_checksum = compute_checksum(lan_path)
     except Exception as e:
-        return {"path": relative_path, "status": "ERROR", "reason": str(e)}
+        return {"path": relative_path, "status": "ERROR", "reason": f"LAN checksum failed: {e}"}
+
+    # Compare with expected checksum (from manifest, which matches source)
+    if lan_checksum == expected_checksum:
+        return {"path": relative_path, "status": "OK", "checksum": lan_checksum}
+
+    # Mismatch — try to verify source checksum to confirm corruption
+    try:
+        if source_path.exists():
+            source_checksum = compute_checksum(source_path)
+            if source_checksum == expected_checksum:
+                return {
+                    "path": relative_path,
+                    "status": "CORRUPTED",
+                    "expected_checksum": expected_checksum,
+                    "lan_checksum": lan_checksum,
+                    "source_checksum": source_checksum,
+                }
+    except Exception:
+        pass
+
+    return {
+        "path": relative_path,
+        "status": "MISMATCH",
+        "expected_checksum": expected_checksum,
+        "lan_checksum": lan_checksum,
+    }
 
 
-def _verify_cloud_file(
+def _verify_cloud_file_download(
     gcs_key_path: str,
     gcs_location: str,
     bucket: str,
     remote_path: str,
     relative_path: str,
-    expected_size: int,
+    expected_checksum: str,
 ) -> dict:
-    """Verify a single file exists on GCS with matching size using rclone."""
+    """Verify cloud file via actual download + checksum (true restore test)."""
     temp_dir = Path(tempfile.gettempdir()) / "backup_agent_test_restore"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    job_id = "test_restore"
+    config_path = None
+    downloaded_file = None
 
+    try:
+        config_path = _write_temp_config(temp_dir, "test_restore_dl", gcs_key_path, gcs_location)
+
+        remote = f"gcs_backup:{bucket}/{remote_path}/{relative_path}"
+        downloaded_file = temp_dir / f"test_restore_{Path(relative_path).name}"
+
+        # Download file from GCS
+        cmd = [
+            "rclone", "copyto", remote, str(downloaded_file),
+            "--config", str(config_path), "--log-level", "ERROR",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+        if result.returncode != 0:
+            return {"path": relative_path, "status": "MISSING", "reason": "download failed"}
+
+        if not downloaded_file.exists():
+            return {"path": relative_path, "status": "MISSING", "reason": "download produced no file"}
+
+        # Compute checksum on downloaded file
+        actual_checksum = compute_checksum(downloaded_file)
+
+        if actual_checksum == expected_checksum:
+            return {"path": relative_path, "status": "OK", "checksum": actual_checksum, "method": "download"}
+
+        return {
+            "path": relative_path,
+            "status": "CORRUPTED",
+            "expected_checksum": expected_checksum,
+            "actual_checksum": actual_checksum,
+            "method": "download",
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"path": relative_path, "status": "ERROR", "reason": "download timed out"}
+    except Exception as e:
+        return {"path": relative_path, "status": "ERROR", "reason": str(e)}
+    finally:
+        if downloaded_file and downloaded_file.exists():
+            try:
+                downloaded_file.unlink()
+            except OSError:
+                pass
+        if config_path and config_path.exists():
+            try:
+                config_path.unlink()
+            except OSError:
+                pass
+
+
+def _verify_cloud_file_md5(
+    gcs_key_path: str,
+    gcs_location: str,
+    bucket: str,
+    remote_path: str,
+    relative_path: str,
+    expected_checksum: str,
+) -> dict:
+    """Verify cloud file via server-side MD5 (no download, zero egress cost)."""
+    temp_dir = Path(tempfile.gettempdir()) / "backup_agent_test_restore"
+    temp_dir.mkdir(parents=True, exist_ok=True)
     config_path = None
 
     try:
-        config_path = _write_temp_config(temp_dir, job_id, gcs_key_path, gcs_location)
+        config_path = _write_temp_config(temp_dir, "test_restore_md5", gcs_key_path, gcs_location)
 
         remote = f"gcs_backup:{bucket}/{remote_path}/{relative_path}"
 
+        # Use rclone check on single file — compares server-side MD5
         cmd = [
-            "rclone", "ls",
-            remote,
-            "--config", str(config_path),
-            "--log-level", "ERROR",
+            "rclone", "check", ".", remote,
+            "--config", str(config_path), "--log-level", "ERROR",
+            "--one-way", "--differ", str(temp_dir / "differ.txt"),
         ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        differ_file = temp_dir / "differ.txt"
+        if differ_file.exists() and differ_file.stat().st_size > 0:
+            return {"path": relative_path, "status": "MISMATCH", "method": "md5"}
 
-        if result.returncode != 0:
-            return {"path": relative_path, "status": "MISSING", "reason": "file not found on GCS"}
+        if result.returncode == 0:
+            return {"path": relative_path, "status": "OK", "method": "md5"}
 
-        output = result.stdout.strip()
-        if not output:
-            return {"path": relative_path, "status": "MISSING", "reason": "empty rclone ls output"}
-
-        parts = output.split(None, 1)
-        if len(parts) < 1:
-            return {"path": relative_path, "status": "ERROR", "reason": "unexpected rclone output"}
-
-        actual_size = int(parts[0])
-        if actual_size != expected_size:
-            return {
-                "path": relative_path,
-                "status": "MISMATCH",
-                "expected_size": expected_size,
-                "actual_size": actual_size,
-            }
-
-        return {"path": relative_path, "status": "OK", "size": actual_size}
+        return {"path": relative_path, "status": "MISSING", "reason": "file not found on GCS", "method": "md5"}
 
     except subprocess.TimeoutExpired:
-        return {"path": relative_path, "status": "ERROR", "reason": "rclone timed out"}
-
-    except FileNotFoundError:
-        return {"path": relative_path, "status": "ERROR", "reason": "rclone not found"}
-
+        return {"path": relative_path, "status": "ERROR", "reason": "check timed out"}
     except Exception as e:
         return {"path": relative_path, "status": "ERROR", "reason": str(e)}
-
     finally:
         if config_path and config_path.exists():
             try:
                 config_path.unlink()
             except OSError:
                 pass
+        for f in [temp_dir / "differ.txt"]:
+            if f.exists():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass

@@ -35,6 +35,8 @@ def collect_metrics_task(
     lan_destination: str = "",
     lan_checksum_verified: int = 0,
     lan_checksum_mismatches: int = 0,
+    lan_retry_count: int = 0,
+    manifest_db_size_mb: float = 0.0,
 ) -> dict:
     """Append backup run metrics to a JSONL file for trend analysis.
 
@@ -86,6 +88,7 @@ def collect_metrics_task(
             "files_failed": lan_files_failed,
             "checksum_verified": lan_checksum_verified,
             "checksum_mismatches": lan_checksum_mismatches,
+            "retry_count": lan_retry_count,
         },
         "cloud": {
             "mismatches": cloud_mismatches,
@@ -93,6 +96,7 @@ def collect_metrics_task(
         },
         "duration_seconds": duration_seconds,
         "throughput_mbps": round(lan_bytes_copied / (1024 * 1024) / max(duration_seconds, 1), 2),
+        "manifest_db_size_mb": manifest_db_size_mb,
         "capacity": {
             "total_source_bytes": total_source_bytes,
             "total_file_count": total_file_count,

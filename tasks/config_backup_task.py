@@ -65,20 +65,12 @@ def backup_config_task(
     # Backup to cloud via rclone
     if cloud_enabled and gcs_key_path and cloud_bucket and cloud_remote_path:
         try:
+            from core.rclone import _write_temp_config
             temp_dir = Path(tempfile.gettempdir()) / "backup_agent_config"
-            temp_dir.mkdir(parents=True, exist_ok=True)
             config_path_temp = None
 
             try:
-                config_path_temp = temp_dir / "rclone_config.conf"
-                config_path_temp.write_text(
-                    "[gcs_backup]\n"
-                    "type = google cloud storage\n"
-                    f"service_account_file = {gcs_key_path}\n"
-                    "bucket_policy_only = true\n"
-                    f"location = {gcs_location}\n",
-                    encoding="utf-8",
-                )
+                config_path_temp = _write_temp_config(temp_dir, "config", gcs_key_path, gcs_location)
 
                 remote = f"gcs_backup:{cloud_bucket}/{cloud_remote_path}"
                 cmd = [

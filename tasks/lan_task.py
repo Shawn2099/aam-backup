@@ -57,15 +57,14 @@ def lan_backup_task(config: AppConfig, scan_result: ScanResult, database_path: s
             f"{result.bytes_copied} bytes copied"
         )
 
-        # Verify checksums on a sample of copied files
+        # Verify checksums on ALL copied files
         lan_checksum = {"verified": 0, "mismatches": 0, "errors": 0}
         if result.status in ("LAN_COMPLETE", "LAN_PARTIAL") and scan_result.has_changes:
-            logger.info("Running LAN checksum verification on sampled files...")
+            logger.info("Running LAN checksum verification on all changed files...")
             lan_checksum = verify_lan_checksums(
                 config.paths.source_drive,
                 config.paths.lan_destination,
                 scan_result,
-                sample_count=5,
             )
             if lan_checksum["mismatches"] > 0:
                 logger.warning(
@@ -77,6 +76,10 @@ def lan_backup_task(config: AppConfig, scan_result: ScanResult, database_path: s
                     f"LAN checksum verification passed: "
                     f"{lan_checksum['verified']} files verified"
                 )
+                # Only mark as backed up after verification confirms integrity
+                all_changed = [f.relative_path for f in scan_result.new_files + scan_result.modified_files]
+                if all_changed:
+                    db.batch_mark_lan_backed_up(all_changed)
 
         return {
             "status": result.status,
@@ -84,6 +87,7 @@ def lan_backup_task(config: AppConfig, scan_result: ScanResult, database_path: s
             "files_copied": result.files_copied,
             "bytes_copied": result.bytes_copied,
             "files_failed": result.files_failed,
+            "retry_count": result.retry_count,
             "lan_checksum": lan_checksum,
         }
     finally:

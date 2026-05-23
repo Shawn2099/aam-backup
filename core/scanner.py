@@ -6,11 +6,13 @@ performance characteristics of os.walk's in-place dirnames mutation.
 """
 
 from pathlib import Path
+import uuid
+from datetime import datetime, timezone
 
 from core.hashing import compute_checksum
 from core.manifest_db import ManifestDB
 from models.config_model import AppConfig
-from models.manifest_model import PENDING_CHECKSUM
+from models.manifest_model import PENDING_CHECKSUM, FileManifest
 from models.scan_result import FileInfo, ScanResult
 
 
@@ -67,7 +69,11 @@ def is_excluded_pattern(filename: str, exclude_patterns: list[str]) -> bool:
     return False
 
 
-def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
+def scan_drive(
+    config: AppConfig,
+    db: ManifestDB,
+    is_full_rescan: bool = False,
+) -> ScanResult:
     """Walk the source drive and classify files.
 
     Algorithm:
@@ -83,6 +89,7 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
     Args:
         config: Validated application configuration.
         db: ManifestDB instance for lookups and updates.
+        is_full_rescan: If True, compute checksums for ALL files (not just changed ones).
 
     Returns:
         ScanResult with new_files, modified_files, deleted_files, unchanged_count.
@@ -97,6 +104,12 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
 
     # Bulk load all manifest entries into memory — avoids 200K+ individual queries
     manifest_cache = db.get_all_entries()
+
+    # Get now_iso timestamp once at the beginning to share across batch updates
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    to_upsert: list[dict] = []
+    to_update_last_seen: list[str] = []
 
     # BUG FIX #2: For VSS paths, store the original drive letter for relative path computation
     # VSS paths look like: \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy123\
@@ -152,6 +165,7 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
 
             if existing is None:
                 # Step 7a: NEW FILE
+                file_id = str(uuid.uuid4())
                 file_info = FileInfo(
                     relative_path=relative_path,
                     file_size=stat_result.st_size,
@@ -159,38 +173,70 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                     checksum="",
                 )
                 result.new_files.append(file_info)
-                db.upsert_entry(
+
+                to_upsert.append({
+                    "file_id": file_id,
+                    "relative_path": relative_path,
+                    "file_size": stat_result.st_size,
+                    "last_modified_timestamp": stat_result.st_mtime,
+                    "checksum": PENDING_CHECKSUM,
+                    "last_seen_at": now_iso,
+                })
+
+                # Update cache so subsequent calculations/scans see it
+                new_entry = FileManifest(
+                    file_id=file_id,
                     relative_path=relative_path,
                     file_size=stat_result.st_size,
                     last_modified_timestamp=stat_result.st_mtime,
                     checksum=PENDING_CHECKSUM,
+                    last_seen_at=now_iso,
+                    backed_up_to_lan=0,
+                    backed_up_to_cloud=0,
                 )
-                # Update cache so subsequent scans in same run see it
-                new_entry = db.get_entry(relative_path)
-                if new_entry:
-                    manifest_cache[relative_path] = new_entry
+                manifest_cache[relative_path] = new_entry
 
             else:
                 # Step 7b/7c: Check size and mtime (1.0 second tolerance)
                 size_match = existing.file_size == stat_result.st_size
                 mtime_match = abs(existing.last_modified_timestamp - stat_result.st_mtime) < 1.0
 
-                if size_match and mtime_match:
-                    # UNCHANGED
-                    db.update_last_seen(relative_path)
+                if size_match and mtime_match and not is_full_rescan:
+                    # UNCHANGED — skip checksum, add to batch last_seen update
+                    to_update_last_seen.append(relative_path)
                     result.unchanged_count += 1
+                    
+                    # Update local cache for correctness
+                    existing.last_seen_at = now_iso
                 else:
-                    # Size or mtime differs — compute checksum
+                    # Size/mtime differs OR full rescan — compute checksum
                     checksum = compute_checksum(full_path)
 
-                    if checksum == existing.checksum:
-                        # METADATA CHANGE ONLY
-                        db.upsert_entry(
-                            relative_path=relative_path,
-                            file_size=stat_result.st_size,
-                            last_modified_timestamp=stat_result.st_mtime,
-                            checksum=checksum,
-                        )
+                    # Check if content actually changed
+                    # During full rescan with pending checksum, treat as unchanged only if size/mtime also match
+                    # (meaning file hasn't been touched since first scan)
+                    if existing.checksum == PENDING_CHECKSUM:
+                        checksums_match = is_full_rescan and size_match and mtime_match
+                    else:
+                        checksums_match = checksum == existing.checksum
+
+                    if checksums_match:
+                        # CONTENT UNCHANGED
+                        to_upsert.append({
+                            "file_id": existing.file_id,
+                            "relative_path": relative_path,
+                            "file_size": stat_result.st_size,
+                            "last_modified_timestamp": stat_result.st_mtime,
+                            "checksum": checksum,
+                            "last_seen_at": now_iso,
+                        })
+                        result.unchanged_count += 1
+                        
+                        # Update local cache
+                        existing.file_size = stat_result.st_size
+                        existing.last_modified_timestamp = stat_result.st_mtime
+                        existing.checksum = checksum
+                        existing.last_seen_at = now_iso
                     else:
                         # MODIFIED FILE
                         file_info = FileInfo(
@@ -200,19 +246,36 @@ def scan_drive(config: AppConfig, db: ManifestDB) -> ScanResult:
                             checksum=checksum,
                         )
                         result.modified_files.append(file_info)
-                        db.upsert_entry(
-                            relative_path=relative_path,
-                            file_size=stat_result.st_size,
-                            last_modified_timestamp=stat_result.st_mtime,
-                            checksum=checksum,
-                        )
+
+                        to_upsert.append({
+                            "file_id": existing.file_id,
+                            "relative_path": relative_path,
+                            "file_size": stat_result.st_size,
+                            "last_modified_timestamp": stat_result.st_mtime,
+                            "checksum": checksum,
+                            "last_seen_at": now_iso,
+                        })
+
+                        # Update local cache
+                        existing.file_size = stat_result.st_size
+                        existing.last_modified_timestamp = stat_result.st_mtime
+                        existing.checksum = checksum
+                        existing.last_seen_at = now_iso
 
     # Deleted file detection — use cached manifest paths
     all_manifest_paths = set(manifest_cache.keys())
     deleted = all_manifest_paths - current_paths
-    for deleted_path in deleted:
-        result.deleted_files.append(deleted_path)
-        db.delete_entry(deleted_path)
+    deleted_list = list(deleted) if deleted else []
+    if deleted_list:
+        for deleted_path in deleted_list:
+            result.deleted_files.append(deleted_path)
+
+    # Single atomic transaction: upsert + update last_seen + delete
+    db.sync_manifest(
+        to_upsert=to_upsert,
+        to_update_last_seen=to_update_last_seen,
+        to_delete=deleted_list,
+    )
 
     # Compute totals for capacity tracking
     result.total_file_count = len(current_paths)

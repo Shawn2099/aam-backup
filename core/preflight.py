@@ -1261,11 +1261,23 @@ def check_binaries(cloud_enabled: bool = False) -> list[CheckResult]:
     return results
 
 
-def check_dry_run_lan(source_drive: str, lan_destination: str) -> CheckResult:
-    """Run robocopy /L (list-only) to preview what would change on LAN."""
+def check_dry_run_lan(
+    source_drive: str,
+    lan_destination: str,
+    exclude_folders: list[str] | None = None,
+    exclude_extensions: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+) -> CheckResult:
+    """Run robocopy /L (list-only) to preview what would change on LAN.
+
+    Validates exit code — failure means the real run would also fail.
+    """
     from core.verify import run_dry_run_lan
 
-    result = run_dry_run_lan(source_drive, lan_destination)
+    result = run_dry_run_lan(
+        source_drive, lan_destination,
+        exclude_folders, exclude_extensions, exclude_patterns,
+    )
 
     if result.get("skipped"):
         return CheckResult(
@@ -1275,12 +1287,13 @@ def check_dry_run_lan(source_drive: str, lan_destination: str) -> CheckResult:
             message=f"Skipped ({result.get('reason', 'unknown')})",
         )
 
-    if "error" in result:
+    if not result.get("success"):
         return CheckResult(
             category="Dry Run",
             name="LAN Preview",
-            severity=Severity.WARN,
-            message=f"Preview failed: {result['error']}",
+            severity=Severity.FAIL,
+            message=f"Dry run failed (exit code {result.get('exit_code', -1)}): {result.get('error', 'unknown')}",
+            details="Real LAN backup would also fail — check destination accessibility and permissions",
         )
 
     total = result["total"]
@@ -1304,18 +1317,32 @@ def check_dry_run_cloud(
     remote_path: str,
     gcs_key_path: str,
     gcs_location: str,
+    exclude_folders: list[str] | None = None,
+    exclude_extensions: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    bandwidth_limit: str = "10M",
+    chunk_size: str = "100M",
+    retry_count: int = 3,
 ) -> CheckResult:
-    """Run rclone sync --dry-run to preview what would change on GCS."""
+    """Run rclone sync --dry-run to preview what would change on GCS.
+
+    Validates exit code — failure means the real run would also fail.
+    """
     from core.verify import run_dry_run_cloud
 
-    result = run_dry_run_cloud(source_drive, bucket, remote_path, gcs_key_path, gcs_location)
+    result = run_dry_run_cloud(
+        source_drive, bucket, remote_path, gcs_key_path, gcs_location,
+        exclude_folders, exclude_extensions, exclude_patterns,
+        bandwidth_limit, chunk_size, retry_count,
+    )
 
-    if "error" in result:
+    if not result.get("success"):
         return CheckResult(
             category="Dry Run",
             name="Cloud Preview",
-            severity=Severity.WARN,
-            message=f"Preview failed: {result['error']}",
+            severity=Severity.FAIL,
+            message=f"Dry run failed (exit code {result.get('exit_code', -1)}): {result.get('error', 'unknown')}",
+            details="Real cloud backup would also fail — check credentials, bucket, and network",
         )
 
     total = result["total"]
@@ -1369,7 +1396,9 @@ def run_preflight_checks(config: dict) -> PreflightReport:
             )
         )
     report.checks.append(check_temp_directory(paths.get("rclone_temp_directory", "")))
-    report.checks.append(check_disk_space(paths.get("source_drive", ""), min_free_gb=5.0))
+    # Use configurable source free space threshold (D-005)
+    source_free_gb = config.get("alerts", {}).get("source_free_space_warning_gb", 5.0)
+    report.checks.append(check_disk_space(paths.get("source_drive", ""), min_free_gb=float(source_free_gb)))
 
     # Network
     report.checks.append(check_ping(wol.get("server_ip", "127.0.0.1"), count=2))
@@ -1419,11 +1448,19 @@ def run_preflight_checks(config: dict) -> PreflightReport:
     report.checks.append(check_database(paths.get("database_path", "")))
     report.checks.append(check_log_directory(paths.get("log_directory", "")))
 
-    # Dry Run Previews
+    # Dry Run Previews (D-006: same flags as real runs + exit code validation)
+    scope = config.get("backup_scope", {})
+    exclude_folders = scope.get("exclude_folders", [])
+    exclude_extensions = scope.get("exclude_extensions", [])
+    exclude_patterns = scope.get("exclude_patterns", [])
+
     if config.get("lan_backup", {}).get("enabled", False):
         report.checks.append(check_dry_run_lan(
             paths.get("source_drive", ""),
             paths.get("lan_destination", ""),
+            exclude_folders,
+            exclude_extensions,
+            exclude_patterns,
         ))
     if cloud.get("enabled", False):
         gcs_key_path = None
@@ -1440,6 +1477,12 @@ def run_preflight_checks(config: dict) -> PreflightReport:
                 cloud.get("remote_path", ""),
                 gcs_key_path,
                 cloud.get("gcs_location", "asia-south1"),
+                exclude_folders,
+                exclude_extensions,
+                exclude_patterns,
+                cloud.get("bandwidth_limit", "10M"),
+                cloud.get("chunk_size", "100M"),
+                cloud.get("retry_count", 3),
             ))
 
     # Finalize report

@@ -74,9 +74,17 @@ def verify_bucket(config: dict) -> bool:
 
     typer.echo(f"  Verifying: {remote}")
 
+    import tempfile
+    from core.rclone import _write_temp_config
+    from pathlib import Path
+    temp_dir = Path(tempfile.gettempdir()) / "backup_agent_seed"
+    temp_config = _write_temp_config(
+        temp_dir, "seed", "/dev/null", cloud.get("gcs_location", "asia-south1")
+    )
+
     try:
         result = subprocess.run(
-            ["rclone", "lsd", remote, "--max-depth", "1"],
+            ["rclone", "lsd", remote, "--config", str(temp_config), "--max-depth", "1"],
             capture_output=True,
             text=True,
             timeout=30,

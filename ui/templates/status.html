@@ -6,193 +6,231 @@
     <title>Backup Status — AAM Associates</title>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        [x-cloak] { display: none !important; }
-    </style>
+    <style>[x-cloak] { display: none !important; }</style>
 </head>
-<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
-    <div x-data="backupStatus()" x-cloak class="max-w-lg w-full">
+<body class="bg-gray-900 min-h-screen p-4">
+    <div x-data="backupStatus()" x-init="init()" x-cloak class="max-w-4xl mx-auto">
 
         <!-- Header -->
-        <div class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-gray-800">Backup Status</h1>
-            <p class="text-gray-500 mt-1">AAM Associates — Automated Daily Backup</p>
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <h1 class="text-2xl font-bold text-white">Backup Status</h1>
+                <p class="text-gray-400 text-sm">AAM Associates — Automated Daily Backup</p>
+            </div>
+            <div class="flex items-center gap-3">
+                <span x-show="inProgress" class="flex items-center gap-2 text-yellow-400 text-sm">
+                    <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                    Running
+                </span>
+                <button @click="triggerBackup()" :disabled="triggering" class="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+                    <span x-show="!triggering">Run Now</span>
+                    <span x-show="triggering">Starting...</span>
+                </button>
+                <button @click="refresh()" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg text-sm transition">
+                    Refresh
+                </button>
+            </div>
         </div>
 
-        <!-- Warning Banner: Both destinations disabled -->
+        <!-- Warning Banner -->
         <template x-if="destinations.all_disabled">
-            <div class="bg-red-50 border-l-4 border-red-500 rounded-lg shadow p-4 mb-4">
-                <div class="flex items-start">
-                    <svg class="w-6 h-6 text-red-500 mr-3 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
-                    </svg>
-                    <div>
-                        <h3 class="text-red-800 font-semibold">No Backup Destinations Enabled</h3>
-                        <p class="text-red-700 text-sm mt-1" x-text="destinations.warning"></p>
-                        <p class="text-red-600 text-xs mt-2">Edit config.yaml and set lan_backup.enabled or cloud_backup.enabled to true.</p>
-                    </div>
-                </div>
+            <div class="bg-red-900/50 border border-red-700 rounded-lg p-4 mb-4">
+                <p class="text-red-300 font-semibold">No Backup Destinations Enabled</p>
+                <p class="text-red-400 text-sm" x-text="destinations.warning"></p>
             </div>
         </template>
 
-        <!-- Backup Destinations Status -->
-        <div class="bg-white rounded-lg shadow p-6 mb-4">
-            <h2 class="text-lg font-semibold text-gray-700 mb-3">Backup Destinations</h2>
-            <div class="space-y-3">
-                <!-- LAN Backup -->
-                <div class="flex items-center justify-between py-2 border-b border-gray-100">
-                    <div class="flex items-center gap-3">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/>
-                        </svg>
-                        <div>
-                            <span class="font-medium text-gray-700">LAN Backup</span>
-                            <p class="text-xs text-gray-400" x-text="destinations.lan.destination"></p>
-                        </div>
-                    </div>
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-                          :class="destinations.lan.enabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-500'">
-                        <span class="w-2 h-2 rounded-full mr-1.5"
-                              :class="destinations.lan.enabled ? 'bg-green-500' : 'bg-gray-400'"></span>
-                        <span x-text="destinations.lan.enabled ? 'Enabled' : 'Disabled'"></span>
-                    </span>
+        <!-- System Health -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <!-- Source Drive -->
+            <div class="bg-gray-800 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z"/></svg>
+                    <span class="text-gray-300 text-sm font-medium">Source Drive</span>
                 </div>
+                <template x-if="system.source.free_gb !== undefined">
+                    <div>
+                        <p class="text-2xl font-bold text-white"><span x-text="system.source.free_gb"></span> GB free</p>
+                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
+                            <div class="h-2 rounded-full" :class="system.source.used_pct > 90 ? 'bg-red-500' : system.source.used_pct > 80 ? 'bg-yellow-500' : 'bg-green-500'" :style="'width: ' + system.source.used_pct + '%'"></div>
+                        </div>
+                        <p class="text-gray-500 text-xs mt-1"><span x-text="system.source.used_pct"></span>% used of <span x-text="system.source.total_gb"></span> GB</p>
+                        <p x-show="system.source.free_gb < 5" class="text-red-400 text-xs mt-1">Low space warning</p>
+                    </div>
+                </template>
+                <template x-if="system.source.error">
+                    <p class="text-gray-500 text-sm">Unavailable</p>
+                </template>
+            </div>
 
-                <!-- Cloud Backup -->
-                <div class="flex items-center justify-between py-2">
-                    <div class="flex items-center gap-3">
-                        <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>
-                        </svg>
-                        <div>
-                            <span class="font-medium text-gray-700">Cloud Backup</span>
-                            <p class="text-xs text-gray-400" x-text="destinations.cloud.provider + ' — ' + destinations.cloud.bucket"></p>
-                        </div>
-                    </div>
-                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
-                          :class="destinations.cloud.enabled ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-500'">
-                        <span class="w-2 h-2 rounded-full mr-1.5"
-                              :class="destinations.cloud.enabled ? 'bg-green-500' : 'bg-gray-400'"></span>
-                        <span x-text="destinations.cloud.enabled ? 'Enabled' : 'Disabled'"></span>
-                    </span>
+            <!-- LAN Destination -->
+            <div class="bg-gray-800 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/></svg>
+                    <span class="text-gray-300 text-sm font-medium">LAN Backup</span>
+                    <span class="ml-auto text-xs px-2 py-0.5 rounded-full" :class="destinations.lan.enabled ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-500'" x-text="destinations.lan.enabled ? 'Enabled' : 'Disabled'"></span>
                 </div>
+                <template x-if="system.lan.free_gb !== undefined">
+                    <div>
+                        <p class="text-2xl font-bold text-white"><span x-text="system.lan.free_gb"></span> GB free</p>
+                        <div class="w-full bg-gray-700 rounded-full h-2 mt-2">
+                            <div class="h-2 rounded-full" :class="system.lan.used_pct > 90 ? 'bg-red-500' : system.lan.used_pct > 80 ? 'bg-yellow-500' : 'bg-green-500'" :style="'width: ' + system.lan.used_pct + '%'"></div>
+                        </div>
+                        <p class="text-gray-500 text-xs mt-1"><span x-text="system.lan.used_pct"></span>% used of <span x-text="system.lan.total_gb"></span> GB</p>
+                    </div>
+                </template>
+                <template x-if="system.lan.error">
+                    <p class="text-gray-500 text-sm">Unavailable</p>
+                </template>
+            </div>
+
+            <!-- Manifest DB -->
+            <div class="bg-gray-800 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7c0-2-1-3-3-3H7C5 4 4 5 4 7z"/></svg>
+                    <span class="text-gray-300 text-sm font-medium">Manifest DB</span>
+                </div>
+                <template x-if="system.manifest.exists">
+                    <div>
+                        <p class="text-2xl font-bold text-white"><span x-text="system.manifest.file_count"></span> files</p>
+                        <p class="text-gray-500 text-xs mt-1"><span x-text="system.manifest.size_mb"></span> MB</p>
+                    </div>
+                </template>
+                <template x-if="!system.manifest.exists">
+                    <p class="text-gray-500 text-sm">Not created yet</p>
+                </template>
             </div>
         </div>
 
-        <!-- Last Run Status -->
-        <div class="bg-white rounded-lg shadow p-6 mb-4"
-             :class="{
-                 'border-l-4 border-green-500': lastStatus === 'Completed',
-                 'border-l-4 border-red-500': lastStatus === 'Failed',
-                 'border-l-4 border-yellow-500': lastStatus === 'Crashed' || lastStatus === 'Cancelled',
-                 'border-l-4 border-gray-300': !lastStatus
-             }">
-            <h2 class="text-lg font-semibold text-gray-700 mb-2">Last Backup</h2>
-
-            <template x-if="!lastStatus">
-                <p class="text-gray-400">No backup runs yet.</p>
+        <!-- Last Run -->
+        <div class="bg-gray-800 rounded-lg p-4 mb-4">
+            <h2 class="text-gray-300 text-sm font-medium mb-3">Last Backup Run</h2>
+            <template x-if="!lastRun">
+                <p class="text-gray-500 text-sm">No backup runs yet.</p>
             </template>
-
-            <template x-if="lastStatus">
+            <template x-if="lastRun">
                 <div>
-                    <div class="flex items-center gap-2 mb-2">
-                        <span class="inline-block w-3 h-3 rounded-full"
-                              :class="{
-                                  'bg-green-500': lastStatus === 'Completed',
-                                  'bg-red-500': lastStatus === 'Failed',
-                                  'bg-yellow-500': lastStatus === 'Crashed' || lastStatus === 'Cancelled'
-                              }"></span>
-                        <span class="font-medium" x-text="lastStatus"></span>
+                    <div class="flex items-center gap-3 mb-3">
+                        <span class="w-3 h-3 rounded-full" :class="{
+                            'bg-green-500': lastRun.state_name === 'Completed',
+                            'bg-red-500': lastRun.state_name === 'Failed',
+                            'bg-yellow-500': lastRun.state_name === 'Running',
+                            'bg-gray-500': true
+                        }"></span>
+                        <span class="text-white font-medium" x-text="lastRun.state_name"></span>
+                        <span class="text-gray-500 text-sm" x-text="formatTime(lastRun.start_time)"></span>
                     </div>
-                    <div class="text-sm text-gray-500 space-y-1">
-                        <p>Started: <span x-text="formatTime(lastStartTime)"></span></p>
-                        <p>Duration: <span x-text="formatDuration(lastStartTime, lastEndTime)"></span></p>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                        <div>
+                            <p class="text-gray-500">Duration</p>
+                            <p class="text-white" x-text="formatDuration(lastRun.total_run_time)"></p>
+                        </div>
+                        <div>
+                            <p class="text-gray-500">Files Changed</p>
+                            <p class="text-white" x-text="metrics.scan?.new + metrics.scan?.modified + metrics.scan?.deleted || '—'"></p>
+                        </div>
+                        <div>
+                            <p class="text-gray-500">LAN Files</p>
+                            <p class="text-white" x-text="metrics.lan?.files_copied || 0"></p>
+                        </div>
+                        <div>
+                            <p class="text-gray-500">Source Size</p>
+                            <p class="text-white" x-text="metrics.capacity?.total_source_gb ? metrics.capacity.total_source_gb + ' GB' : '—'"></p>
+                        </div>
                     </div>
                 </div>
             </template>
         </div>
 
-        <!-- Next Run -->
-        <div class="bg-white rounded-lg shadow p-6 mb-4">
-            <h2 class="text-lg font-semibold text-gray-700 mb-2">Next Scheduled Backup</h2>
-            <p class="text-gray-600">Tonight at 11:00 PM IST</p>
-            <p class="text-sm text-gray-400 mt-1">Countdown: <span x-text="countdown" x-ref="countdown"></span></p>
+        <!-- Run History -->
+        <div class="bg-gray-800 rounded-lg p-4 mb-4">
+            <h2 class="text-gray-300 text-sm font-medium mb-3">Last 7 Runs</h2>
+            <template x-if="history.length === 0">
+                <p class="text-gray-500 text-sm">No history yet.</p>
+            </template>
+            <div class="space-y-1">
+                <template x-for="run in history" :key="run.id">
+                    <div class="flex items-center justify-between py-1.5 text-sm">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full" :class="{
+                                'bg-green-500': run.state_name === 'Completed',
+                                'bg-red-500': run.state_name === 'Failed',
+                                'bg-yellow-500': run.state_name === 'Running',
+                                'bg-gray-500': true
+                            }"></span>
+                            <span class="text-gray-400" x-text="formatDate(run.start_time)"></span>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <span class="text-gray-500" x-text="formatDuration(run.total_run_time)"></span>
+                            <span class="text-gray-300 font-medium" x-text="run.state_name"></span>
+                        </div>
+                    </div>
+                </template>
+            </div>
         </div>
 
-        <!-- Trigger Button -->
-        <div class="bg-white rounded-lg shadow p-6">
-            <button
-                @click="triggerBackup()"
-                :disabled="inProgress || triggering || destinations.all_disabled"
-                class="w-full py-3 px-4 rounded-lg font-medium transition-colors"
-                :class="{
-                    'bg-blue-600 text-white hover:bg-blue-700': !inProgress && !triggering && !destinations.all_disabled,
-                    'bg-gray-300 text-gray-500 cursor-not-allowed': inProgress || triggering || destinations.all_disabled
-                }">
-                <span x-show="!triggering" x-text="inProgress ? 'Backup Running...' : (destinations.all_disabled ? 'No Destinations Configured' : 'Run Backup Now')"></span>
-                <span x-show="triggering">Starting...</span>
-            </button>
-            <p x-show="triggerMessage" class="text-sm mt-2 text-center"
-               :class="triggerSuccess ? 'text-green-600' : 'text-red-600'"
-               x-text="triggerMessage"></p>
+        <!-- Destinations -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div class="bg-gray-800 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2"/></svg>
+                    <span class="text-gray-300 text-sm font-medium">LAN Backup</span>
+                </div>
+                <p class="text-gray-500 text-xs" x-text="destinations.lan.destination"></p>
+                <p class="text-gray-500 text-xs mt-1">Free: <span x-text="system.lan.free_gb || '—'"></span> GB</p>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4">
+                <div class="flex items-center gap-2 mb-2">
+                    <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+                    <span class="text-gray-300 text-sm font-medium">Cloud Backup</span>
+                </div>
+                <p class="text-gray-500 text-xs" x-text="destinations.cloud.provider + ' — ' + destinations.cloud.bucket"></p>
+            </div>
         </div>
 
-        <!-- Prefect UI Link -->
-        <div class="text-center mt-6">
-            <a href="http://127.0.0.1:4200" target="_blank"
-               class="text-blue-600 hover:text-blue-800 text-sm underline">
-                Open Prefect UI →
-            </a>
+        <!-- Trigger Message -->
+        <p x-show="triggerMessage" class="text-center text-sm mb-4" :class="triggerSuccess ? 'text-green-400' : 'text-red-400'" x-text="triggerMessage"></p>
+
+        <!-- Footer -->
+        <div class="text-center">
+            <a href="http://127.0.0.1:4200" target="_blank" class="text-blue-400 hover:text-blue-300 text-sm">Open Prefect UI →</a>
         </div>
     </div>
 
     <script>
         function backupStatus() {
             return {
-                lastStatus: null,
-                lastStartTime: null,
-                lastEndTime: null,
+                lastRun: null,
                 inProgress: false,
                 triggering: false,
                 triggerMessage: '',
                 triggerSuccess: false,
-                countdown: '',
                 destinations: {{ destinations | tojson }},
+                system: { source: {}, lan: {}, manifest: {} },
+                metrics: {},
+                history: [],
 
-                init() {
-                    this.updateCountdown();
-                    setInterval(() => this.updateCountdown(), 1000);
-                    // Auto-refresh every 60 seconds
-                    setInterval(() => location.reload(), 60000);
+                async init() {
+                    await this.refresh();
+                    setInterval(() => this.refresh(), 60000);
                 },
 
-                updateCountdown() {
-                    const now = new Date();
-                    // Next run at 23:00 IST (UTC+5:30)
-                    const target = new Date();
-                    target.setHours(23, 0, 0, 0);
-                    if (now >= target) {
-                        target.setDate(target.getDate() + 1);
+                async refresh() {
+                    try {
+                        const [systemResp, metricsResp, historyResp] = await Promise.all([
+                            fetch('/api/system'),
+                            fetch('/metrics'),
+                            fetch('/api/history?limit=7'),
+                        ]);
+                        this.system = await systemResp.json();
+                        this.metrics = await metricsResp.json();
+                        const hist = await historyResp.json();
+                        this.history = hist.runs || [];
+                        this.lastRun = this.history[0] || null;
+                        this.inProgress = this.lastRun?.state_name === 'Running';
+                    } catch (e) {
+                        console.error('Refresh failed:', e);
                     }
-                    const diff = target - now;
-                    const hours = Math.floor(diff / 3600000);
-                    const minutes = Math.floor((diff % 3600000) / 60000);
-                    const seconds = Math.floor((diff % 60000) / 1000);
-                    this.countdown = `${hours}h ${minutes}m ${seconds}s`;
-                },
-
-                formatTime(isoString) {
-                    if (!isoString) return '—';
-                    const d = new Date(isoString);
-                    return d.toLocaleString();
-                },
-
-                formatDuration(start, end) {
-                    if (!start || !end) return '—';
-                    const diff = (new Date(end) - new Date(start)) / 1000;
-                    const mins = Math.floor(diff / 60);
-                    const secs = Math.floor(diff % 60);
-                    return `${mins}m ${secs}s`;
                 },
 
                 async triggerBackup() {
@@ -205,12 +243,31 @@
                         this.triggerSuccess = data.status === 'ok';
                         if (this.triggerSuccess) {
                             this.inProgress = true;
+                            setTimeout(() => this.refresh(), 5000);
                         }
                     } catch (e) {
                         this.triggerMessage = 'Failed to trigger backup';
                         this.triggerSuccess = false;
                     }
                     this.triggering = false;
+                },
+
+                formatTime(iso) {
+                    if (!iso) return '—';
+                    return new Date(iso).toLocaleString();
+                },
+
+                formatDate(iso) {
+                    if (!iso) return '—';
+                    const d = new Date(iso);
+                    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                },
+
+                formatDuration(seconds) {
+                    if (!seconds) return '—';
+                    const m = Math.floor(seconds / 60);
+                    const s = Math.floor(seconds % 60);
+                    return m > 0 ? m + 'm ' + s + 's' : s + 's';
                 }
             }
         }

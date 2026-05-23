@@ -166,15 +166,17 @@ def run_rclone_check(
 ) -> dict:
     """Run rclone check to verify source vs cloud destination integrity.
 
-    Compares source and destination files by size and hash.
-    Reports any mismatches or missing files.
+    Uses rclone's --differ, --missing-on-dst, --error flags to write
+    mismatch details to temp files (one path per line). No stdout parsing.
+    Compares source and destination files by size and GCS server-side MD5 hash.
 
     Args:
         config: Validated application configuration.
         gcs_key_path: Path to GCS service account JSON key.
 
     Returns:
-        Dict with check results: {"matches": int, "mismatches": int, "missing": int, "output": str}
+        Dict with check results: {"status": str, "matches": int, "mismatches": int,
+        "missing": int, "errors": int, "differ_paths": list, "missing_paths": list, "error_paths": list}
     """
     cloud_config = config.cloud_backup
     paths_config = config.paths
@@ -183,6 +185,9 @@ def run_rclone_check(
 
     config_path = None
     filter_path = None
+    differ_file = None
+    missing_file = None
+    error_file = None
 
     try:
         config_path = _write_temp_config(temp_dir, job_id, gcs_key_path, cloud_config.gcs_location)
@@ -194,6 +199,11 @@ def run_rclone_check(
             paths_config.source_drive,
         )
 
+        # Temp files for rclone structured output (one path per line)
+        differ_file = temp_dir / f"rclone_{job_id}_differ.txt"
+        missing_file = temp_dir / f"rclone_{job_id}_missing.txt"
+        error_file = temp_dir / f"rclone_{job_id}_errors.txt"
+
         remote = f"gcs_backup:{cloud_config.bucket}/{cloud_config.remote_path}"
         cmd = [
             "rclone", "check",
@@ -201,6 +211,10 @@ def run_rclone_check(
             remote,
             "--config", str(config_path),
             "--filter-from", str(filter_path),
+            # Structured output to files — no stdout parsing needed
+            "--differ", str(differ_file),
+            "--missing-on-dst", str(missing_file),
+            "--error", str(error_file),
             # GCS-specific optimizations
             "--fast-list",
             "--gcs-no-check-bucket",
@@ -221,61 +235,82 @@ def run_rclone_check(
             timeout=cloud_config.subprocess_timeout_seconds,
         )
 
-        # Parse output for summary
-        output = result.stdout
-        matches = 0
-        mismatches = 0
-        missing = 0
+        # Read structured output files (one path per line, no parsing needed)
+        differ_paths = _read_path_file(differ_file)
+        missing_paths = _read_path_file(missing_file)
+        error_paths = _read_path_file(error_file)
 
-        for line in output.splitlines():
-            if "identical" in line.lower():
-                # rclone check outputs: "X files identical"
-                import re
-                match = re.search(r"(\d+)\s+files?\s+identical", line, re.IGNORECASE)
-                if match:
-                    matches = int(match.group(1))
-            elif "differ" in line.lower() or "mismatch" in line.lower():
-                match = re.search(r"(\d+)\s+files?\s+(?:differ|mismatch)", line, re.IGNORECASE)
-                if match:
-                    mismatches = int(match.group(1))
-            elif "missing" in line.lower():
-                match = re.search(r"(\d+)\s+files?\s+missing", line, re.IGNORECASE)
-                if match:
-                    missing = int(match.group(1))
+        mismatches = len(differ_paths)
+        missing = len(missing_paths)
+        errors = len(error_paths)
 
         # rclone check returns 0 if all OK, 1 if differences found
         status = "OK" if result.returncode == 0 else "MISMATCH"
 
-        logger.info(f"Rclone check {status}: {matches} matches, {mismatches} mismatches, {missing} missing")
+        logger.info(
+            f"Rclone check {status}: "
+            f"{mismatches} mismatches, "
+            f"{missing} missing, "
+            f"{errors} errors"
+        )
 
         return {
             "status": status,
-            "matches": matches,
+            "matches": 0,  # Not tracked by file-output mode
             "mismatches": mismatches,
             "missing": missing,
-            "output": output,
+            "errors": errors,
+            "differ_paths": differ_paths,
+            "missing_paths": missing_paths,
+            "error_paths": error_paths,
+            "output": result.stdout,
         }
 
     except subprocess.TimeoutExpired:
         logger.critical(f"Rclone check timed out after {cloud_config.subprocess_timeout_seconds}s")
-        return {"status": "TIMEOUT", "matches": 0, "mismatches": 0, "missing": 0, "output": ""}
+        return {"status": "TIMEOUT", "matches": 0, "mismatches": 0, "missing": 0, "errors": 0,
+                "differ_paths": [], "missing_paths": [], "error_paths": [], "output": ""}
 
     except FileNotFoundError:
         logger.critical("rclone.exe not found — not installed?")
-        return {"status": "ERROR", "matches": 0, "mismatches": 0, "missing": 0, "output": ""}
+        return {"status": "ERROR", "matches": 0, "mismatches": 0, "missing": 0, "errors": 0,
+                "differ_paths": [], "missing_paths": [], "error_paths": [], "output": ""}
 
     except OSError as e:
         logger.critical(f"Rclone check failed with OS error: {e}")
-        return {"status": "ERROR", "matches": 0, "mismatches": 0, "missing": 0, "output": ""}
+        return {"status": "ERROR", "matches": 0, "mismatches": 0, "missing": 0, "errors": 0,
+                "differ_paths": [], "missing_paths": [], "error_paths": [], "output": ""}
 
     finally:
-        for path in [config_path, filter_path]:
+        for path in [config_path, filter_path, differ_file, missing_file, error_file]:
             if path and path.exists():
                 try:
                     path.unlink()
                     logger.debug(f"Cleaned up temp file: {path}")
                 except OSError as e:
                     logger.critical(f"Failed to delete temp file {path}: {e} — Manual deletion required")
+
+
+def _read_path_file(file_path: Path) -> list[str]:
+    """Read a file containing one path per line (from rclone --differ/--missing-on-dst/--error).
+
+    Returns empty list if file doesn't exist or is empty.
+
+    Args:
+        file_path: Path to the file.
+
+    Returns:
+        List of paths, one per line, stripped of whitespace.
+    """
+    if not file_path or not file_path.exists():
+        return []
+    try:
+        content = file_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return []
+        return [line.strip() for line in content.splitlines() if line.strip()]
+    except OSError:
+        return []
 
 
 def run_rclone(
@@ -376,16 +411,8 @@ def run_rclone(
 
         logger.info(f"Rclone {status} (exit code {result.returncode})")
 
-        # Update manifest
+        # Compute checksums for new files that were successfully backed up
         if status in ("CLOUD_COMPLETE", "CLOUD_PARTIAL"):
-            changed_paths = [
-                f.relative_path
-                for f in scan_result.new_files + scan_result.modified_files
-            ]
-            if changed_paths:
-                db.batch_mark_cloud_backed_up(changed_paths)
-
-            # Compute checksums for new files that were successfully backed up (if not already done by LAN backup)
             for file_info in scan_result.new_files:
                 entry = db.get_entry(file_info.relative_path)
                 if entry and entry.checksum == PENDING_CHECKSUM:

@@ -1,5 +1,10 @@
 # BACKUP AUTOMATION SYSTEM — Agent Context
 
+> **🔀 WORKFLOW ROUTER ACTIVE:** Before any code action, consult `workflow-router` skill.
+> It classifies tasks, prescribes tool chains (GitNexus/Exa/Context7/Prefect/etc.), 
+> enforces human-in-the-loop at risk points, and prevents wrong-tool waste.
+> Spec-driven context-first development. Check `workflow-router` skill for full routing table.
+
 ## What This Is
 
 Automated daily backup of a Windows Server 2016 D:\ drive (~370GB, 200K+ files) to two destinations simultaneously:
@@ -105,7 +110,7 @@ Read `docs/plan.md` for implementation details. This file is for quick orientati
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **aam-backup** (1986 symbols, 2915 relationships, 41 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **aam-backup** (2169 symbols, 3152 relationships, 48 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

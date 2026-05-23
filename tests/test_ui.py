@@ -69,6 +69,8 @@ def test_index_shows_last_run_status(client):
 
 def test_trigger_backup_success(client):
     """POST /trigger returns ok when deployment found."""
+    from ui import server
+    server._trigger_last_called = 0.0  # reset rate limiter
     mock_deployments = [{"id": "test-deployment-id"}]
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
@@ -87,6 +89,8 @@ def test_trigger_backup_success(client):
 
 def test_trigger_backup_deployment_not_found(client):
     """POST /trigger returns error when deployment not found."""
+    from ui import server
+    server._trigger_last_called = 0.0  # reset rate limiter
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
         mock_instance.post = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: []))
@@ -99,12 +103,14 @@ def test_trigger_backup_deployment_not_found(client):
 
 
 def test_trigger_backup_prefect_unavailable(client):
-    """POST /trigger returns error when Prefect is unavailable."""
+    """POST /trigger returns 502 when Prefect is unavailable."""
+    from ui import server
+    server._trigger_last_called = 0.0  # reset rate limiter
     with patch("httpx.AsyncClient") as mock_client:
         mock_instance = MagicMock()
         mock_instance.post = AsyncMock(side_effect=Exception("Connection refused"))
         mock_client.return_value.__aenter__.return_value = mock_instance
         response = client.post("/trigger")
-        assert response.status_code == 200
+        assert response.status_code == 502
         data = response.json()
-        assert data["status"] == "error"
+        assert "error" in data

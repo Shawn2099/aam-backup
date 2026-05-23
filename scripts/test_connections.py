@@ -41,19 +41,20 @@ def test_lan_connection(config: dict) -> bool:
 
     if sys.platform == "win32":
         try:
-            dest_path = Path(dest)
-            if dest_path.exists() and dest_path.is_dir():
-                # Test read access by attempting to list a few items
-                list(dest_path.iterdir())
-                typer.echo("  LAN share is accessible")
-                return True
-            else:
-                typer.echo("  LAN share access failed: Path does not exist or is not a directory")
-                return False
+            import os
+            dest_path = dest
+            # Path.exists() returns False for UNC paths even when accessible.
+            # Use os.listdir() as the real accessibility test.
+            os.listdir(dest_path)
+            typer.echo("  LAN share is accessible")
+            return True
         except PermissionError:
             typer.echo("  LAN share access failed: Permission denied")
             return False
-        except Exception as e:
+        except FileNotFoundError:
+            typer.echo("  LAN share not found")
+            return False
+        except OSError as e:
             typer.echo(f"  LAN share connection failed: {e}")
             return False
     else:

@@ -237,6 +237,179 @@ class ManifestDB:
             finally:
                 session.close()
 
+    def batch_update_last_seen(self, relative_paths: list[str]) -> int:
+        """Update last_seen_at for multiple relative paths in batches.
+
+        Acquires write lock. Returns total number of rows updated.
+        """
+        if not relative_paths:
+            return 0
+
+        # Chunk to avoid SQLite variable limit (max 999)
+        chunk_size = 900
+        total_updated = 0
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._lock:
+            session = self._get_session()
+            try:
+                for i in range(0, len(relative_paths), chunk_size):
+                    chunk = relative_paths[i:i + chunk_size]
+                    stmt = update(FileManifest).where(
+                        FileManifest.relative_path.in_(chunk)
+                    ).values(
+                        last_seen_at=now
+                    )
+                    result = session.execute(stmt)
+                    total_updated += result.rowcount
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        return total_updated
+
+    def batch_delete_entries(self, relative_paths: list[str]) -> int:
+        """Delete multiple manifest entries by relative paths in batches.
+
+        Acquires write lock. Returns total number of rows deleted.
+        """
+        if not relative_paths:
+            return 0
+
+        # Chunk to avoid SQLite variable limit
+        chunk_size = 900
+        total_deleted = 0
+
+        with self._lock:
+            session = self._get_session()
+            try:
+                for i in range(0, len(relative_paths), chunk_size):
+                    chunk = relative_paths[i:i + chunk_size]
+                    stmt = delete(FileManifest).where(
+                        FileManifest.relative_path.in_(chunk)
+                    )
+                    result = session.execute(stmt)
+                    total_deleted += result.rowcount
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        return total_deleted
+
+    def batch_upsert_entries(self, entries: list[dict]) -> None:
+        """Insert or update multiple manifest entries in batches.
+
+        Acquires write lock.
+        """
+        if not entries:
+            return
+
+        from sqlalchemy.dialects.sqlite import insert
+
+        # Chunk to avoid SQLite variable limit (max 999).
+        # Since each entry has 6 values, chunking at 150 is safe (900 variables).
+        chunk_size = 150
+
+        with self._lock:
+            session = self._get_session()
+            try:
+                for i in range(0, len(entries), chunk_size):
+                    chunk = entries[i:i + chunk_size]
+                    stmt = insert(FileManifest).values(chunk)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=[FileManifest.relative_path],
+                        set_={
+                            "file_size": stmt.excluded.file_size,
+                            "last_modified_timestamp": stmt.excluded.last_modified_timestamp,
+                            "checksum": stmt.excluded.checksum,
+                            "last_seen_at": stmt.excluded.last_seen_at,
+                        }
+                    )
+                    session.execute(stmt)
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+
+    def sync_manifest(
+        self,
+        to_upsert: list[dict],
+        to_update_last_seen: list[str],
+        to_delete: list[str],
+    ) -> dict:
+        """Synchronise manifest in a single atomic transaction.
+
+        Upserts new/modified entries, updates last_seen_at for existing files,
+        and deletes removed files — all within one transaction. This eliminates
+        the gap between separate upsert/update/delete commit calls where a crash
+        could leave phantom entries.
+
+        Acquires write lock. Returns counts per operation.
+        """
+        from sqlalchemy.dialects.sqlite import insert
+
+        chunk_size = 150
+        result = {"upserted": 0, "last_seen_updated": 0, "deleted": 0}
+
+        with self._lock:
+            session = self._get_session()
+            try:
+                now = datetime.now(timezone.utc).isoformat()
+
+                if to_upsert:
+                    for i in range(0, len(to_upsert), chunk_size):
+                        chunk = to_upsert[i:i + chunk_size]
+                        stmt = insert(FileManifest).values(chunk)
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=[FileManifest.relative_path],
+                            set_={
+                                "file_size": stmt.excluded.file_size,
+                                "last_modified_timestamp": stmt.excluded.last_modified_timestamp,
+                                "checksum": stmt.excluded.checksum,
+                                "last_seen_at": stmt.excluded.last_seen_at,
+                            },
+                        )
+                        session.execute(stmt)
+                    result["upserted"] = len(to_upsert)
+
+                if to_update_last_seen:
+                    for i in range(0, len(to_update_last_seen), 900):
+                        chunk = to_update_last_seen[i:i + 900]
+                        stmt = (
+                            update(FileManifest)
+                            .where(FileManifest.relative_path.in_(chunk))
+                            .values(last_seen_at=now)
+                        )
+                        exec_result = session.execute(stmt)
+                        result["last_seen_updated"] += exec_result.rowcount
+
+                if to_delete:
+                    for i in range(0, len(to_delete), 900):
+                        chunk = to_delete[i:i + 900]
+                        stmt = delete(FileManifest).where(
+                            FileManifest.relative_path.in_(chunk)
+                        )
+                        exec_result = session.execute(stmt)
+                        result["deleted"] += exec_result.rowcount
+
+                session.commit()
+                return result
+
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
     def get_all_paths(self) -> set[str]:
         """Get all relative paths in the manifest. Thread-safe read (no lock needed)."""
         session = self._get_session()
@@ -267,6 +440,22 @@ class ManifestDB:
     def close(self):
         """Dispose the engine. Call when shutting down."""
         self._engine.dispose()
+
+    def get_run_counter(self) -> int:
+        """Read the persistent run counter without incrementing.
+
+        Thread-safe read (no lock needed). Used by reconciliation task
+        to check if this is the Nth run without modifying the counter.
+
+        Returns:
+            Current run number (0 if not yet initialized).
+        """
+        session = self._get_session()
+        try:
+            row = session.execute(text("SELECT value FROM run_counter WHERE id = 1")).fetchone()
+            return row[0] if row else 0
+        finally:
+            session.close()
 
     def get_and_increment_run_counter(self) -> int:
         """Get and increment a persistent run counter in the database.

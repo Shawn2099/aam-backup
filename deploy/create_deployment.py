@@ -1,12 +1,11 @@
 """Create Prefect deployment for the nightly backup flow.
 
 Usage:
-    uv run deploy/create_deployment.py [--config config.yaml] [--work-pool default]
+    uv run deploy/create_deployment.py [--config config.yaml]
 
-Uses Prefect's native flow.deploy() method instead of subprocess CLI calls.
+Uses Prefect 3.x flow.serve() method for deployment creation.
 Creates a deployment named 'nightly-backup-production' with:
 - Cron schedule at configured daily_time
-- Work pool assignment
 - Default parameters
 """
 
@@ -33,9 +32,8 @@ def time_to_cron(time_str: str) -> str:
 @app.command()
 def create(
     config: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config.yaml"),
-    work_pool: str = typer.Option("default", "--work-pool", "-p", help="Prefect work pool name"),
 ):
-    """Create the Prefect deployment using native flow.deploy()."""
+    """Create the Prefect deployment using flow.serve()."""
     from flow import nightly_backup
 
     typer.echo("=" * 50)
@@ -49,23 +47,15 @@ def create(
     config_path = Path("config.yaml").resolve()
 
     typer.echo(f"\n  Schedule: {cron} (daily at {daily_time})")
-    typer.echo(f"  Work pool: {work_pool}")
     typer.echo(f"  Config: {config_path}")
 
-    try:
-        deployment_id = nightly_backup.deploy(
-            name="nightly-backup-production",
-            work_pool_name=work_pool,
-            cron=cron,
-            parameters={"config_path": str(config_path)},
-            tags=["production", "backup", "aam-associates"],
-            description="Nightly backup of D:\\ drive to LAN and GCS",
-        )
-        typer.echo(f"\n  Deployment created: {deployment_id}")
-        typer.echo("\nDeployment ready")
-    except Exception as e:
-        typer.echo(f"\n  Failed: {e}")
-        raise typer.Exit(1)
+    nightly_backup.serve(
+        name="nightly-backup-production",
+        cron=cron,
+        parameters={"config_path": str(config_path)},
+        tags=["production", "backup", "aam-associates"],
+        description="Nightly backup of D:\\ drive to LAN and GCS",
+    )
 
 
 if __name__ == "__main__":

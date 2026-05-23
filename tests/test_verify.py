@@ -59,7 +59,7 @@ class TestVerifyLanChecksums:
         for name in ["file1.txt", "file2.txt", "file3.txt"]:
             scan.new_files.append(FileInfo(name, 4, 1700000000.0, "abc"))
 
-        result = verify_lan_checksums(str(source), str(lan), scan, sample_count=3)
+        result = verify_lan_checksums(str(source), str(lan), scan)
         assert result["verified"] == 3
         assert result["mismatches"] == 0
 
@@ -75,7 +75,7 @@ class TestVerifyLanChecksums:
         scan = ScanResult()
         scan.new_files.append(FileInfo("file.txt", 7, 1700000000.0, "abc"))
 
-        result = verify_lan_checksums(str(source), str(lan), scan, sample_count=1)
+        result = verify_lan_checksums(str(source), str(lan), scan)
         assert result["mismatches"] == 1
 
     def test_detects_missing_file(self, tmp_path):
@@ -90,10 +90,11 @@ class TestVerifyLanChecksums:
         scan = ScanResult()
         scan.new_files.append(FileInfo("file.txt", 4, 1700000000.0, "abc"))
 
-        result = verify_lan_checksums(str(source), str(lan), scan, sample_count=1)
+        result = verify_lan_checksums(str(source), str(lan), scan)
         assert result["errors"] >= 1
 
-    def test_respects_sample_count(self, tmp_path):
+    def test_verifies_all_changed_files(self, tmp_path):
+        """Verifies ALL changed files, not just a sample."""
         source = tmp_path / "source"
         lan = tmp_path / "lan"
         source.mkdir()
@@ -107,8 +108,9 @@ class TestVerifyLanChecksums:
         for i in range(20):
             scan.new_files.append(FileInfo(f"f{i}.txt", 1, 1700000000.0, "abc"))
 
-        result = verify_lan_checksums(str(source), str(lan), scan, sample_count=3)
-        assert len(result["details"]) == 3
+        result = verify_lan_checksums(str(source), str(lan), scan)
+        assert result["verified"] == 20
+        assert len(result["details"]) == 20
 
 
 class TestVerifyCloudChecksums:

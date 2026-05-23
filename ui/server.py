@@ -1,42 +1,90 @@
 """FastAPI status page server."""
 
-import httpx
 import json
+import sqlite3
+import time
 import yaml
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+import httpx
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 app = FastAPI(title="Backup Status")
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-templates.env.cache = None  # Disable template caching
+templates.env.cache = None
+
+DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+DEFAULT_PREFECT_API_URL = "http://127.0.0.1:4200/api"
+DEFAULT_HTTPX_TIMEOUT = 5.0
+TRIGGER_TIMEOUT = 10.0
+TRIGGER_RATE_LIMIT_SECONDS = 30.0
+
+_trigger_last_called: float = 0.0
+_config_cache: dict | None = None
+_config_cache_time: float = 0.0
+CONFIG_CACHE_TTL = 5.0
 
 
-def _load_config() -> dict:
-    """Load config.yaml and return as dict."""
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                return yaml.safe_load(f)
-        except Exception:
-            pass
-    return {}
+# ---------------------------------------------------------------------------
+# Exception handlers — prevent internal traceback leaks
+# ---------------------------------------------------------------------------
 
-
-def _load_prefect_api_url() -> str:
-    """Load Prefect API URL from config.yaml, falling back to default."""
-    config = _load_config()
-    return config.get("ui", {}).get(
-        "prefect_api_url", "http://127.0.0.1:4200/api"
+@app.exception_handler(StarletteHTTPException)
+async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail},
     )
 
 
+@app.exception_handler(HTTPException)
+async def fastapi_http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail},
+    )
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _load_config() -> dict:
+    """Load config.yaml with caching to avoid repeated disk reads."""
+    global _config_cache, _config_cache_time
+    now = time.monotonic()
+    if _config_cache is not None and (now - _config_cache_time) < CONFIG_CACHE_TTL:
+        return _config_cache
+    if DEFAULT_CONFIG_PATH.exists():
+        try:
+            with open(DEFAULT_CONFIG_PATH, encoding="utf-8") as f:
+                _config_cache = yaml.safe_load(f) or {}
+        except Exception:
+            _config_cache = {}
+    else:
+        _config_cache = {}
+    _config_cache_time = now
+    return _config_cache
+
+
+def _load_prefect_api_url() -> str:
+    config = _load_config()
+    return config.get("ui", {}).get("prefect_api_url", DEFAULT_PREFECT_API_URL)
+
+
 def _get_backup_destinations() -> dict:
-    """Return backup destination status from config (no Pydantic needed for UI)."""
     config = _load_config()
     lan = config.get("lan_backup", {})
     cloud = config.get("cloud_backup", {})
@@ -69,14 +117,48 @@ def _get_backup_destinations() -> dict:
     }
 
 
+def _get_manifest_info(db_path: str) -> dict:
+    """Safely query manifest DB for file count and size."""
+    result = {}
+    db_file = Path(db_path)
+    if not db_file.exists():
+        return {"exists": False}
+
+    try:
+        result["size_mb"] = round(db_file.stat().st_size / (1024 ** 2), 1)
+        result["exists"] = True
+    except Exception:
+        return {"error": "unavailable"}
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        cursor = conn.execute("SELECT COUNT(*) as cnt FROM file_manifest")
+        row = cursor.fetchone()
+        result["file_count"] = row["cnt"] if row else 0
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
 @app.get("/health")
 async def health():
-    """Health check endpoint for Servy monitoring and external tools."""
     prefect_api_url = _load_prefect_api_url()
     prefect_healthy = False
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=DEFAULT_HTTPX_TIMEOUT) as client:
             resp = await client.get(f"{prefect_api_url}/health")
             prefect_healthy = resp.status_code == 200
     except Exception:
@@ -92,7 +174,6 @@ async def health():
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    """Serve the status page with last run info and next scheduled run."""
     prefect_api_url = _load_prefect_api_url()
     destinations = _get_backup_destinations()
 
@@ -101,8 +182,7 @@ async def index(request: Request):
     in_progress = False
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            # Get last flow run
+        async with httpx.AsyncClient(timeout=DEFAULT_HTTPX_TIMEOUT) as client:
             resp = await client.post(
                 f"{prefect_api_url}/flow_runs/filter",
                 json={
@@ -117,7 +197,6 @@ async def index(request: Request):
                     last_run = runs[0]
                     in_progress = last_run.get("state_name") == "Running"
 
-            # Get deployment schedule
             resp = await client.post(
                 f"{prefect_api_url}/deployments/filter",
                 json={
@@ -130,7 +209,7 @@ async def index(request: Request):
                     next_run = deployments[0]
 
     except Exception:
-        pass  # UI gracefully degrades if Prefect is unavailable
+        pass
 
     return templates.TemplateResponse(
         request=request,
@@ -147,18 +226,21 @@ async def index(request: Request):
 
 @app.get("/config", response_class=JSONResponse)
 async def get_config():
-    """Return backup destination configuration status."""
     return _get_backup_destinations()
 
 
 @app.post("/trigger")
 async def trigger_backup():
-    """Trigger an immediate backup run via Prefect API."""
+    global _trigger_last_called
+    now = time.monotonic()
+    if now - _trigger_last_called < TRIGGER_RATE_LIMIT_SECONDS:
+        raise HTTPException(status_code=429, detail="Rate limited. Please wait before triggering again.")
+    _trigger_last_called = now
+
     prefect_api_url = _load_prefect_api_url()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            # Get deployment ID
+        async with httpx.AsyncClient(timeout=TRIGGER_TIMEOUT) as client:
             resp = await client.post(
                 f"{prefect_api_url}/deployments/filter",
                 json={
@@ -170,7 +252,6 @@ async def trigger_backup():
 
             deployment_id = resp.json()[0]["id"]
 
-            # Create flow run
             resp = await client.post(
                 f"{prefect_api_url}/flow_runs",
                 json={"deployment_id": deployment_id},
@@ -180,22 +261,13 @@ async def trigger_backup():
             return {"status": "error", "message": "Failed to create flow run"}
 
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=502, detail=f"Prefect API unavailable: {e}")
 
 
 @app.get("/metrics")
 async def get_metrics():
-    """Return latest backup metrics including capacity info."""
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    log_dir = None
-    if config_path.exists():
-        try:
-            with open(config_path) as f:
-                config = yaml.safe_load(f)
-            log_dir = config.get("paths", {}).get("log_directory")
-        except Exception:
-            pass
-
+    config = _load_config()
+    log_dir = config.get("paths", {}).get("log_directory")
     if not log_dir:
         return {"status": "error", "message": "Could not determine log directory"}
 
@@ -203,15 +275,14 @@ async def get_metrics():
     if not metrics_file.exists():
         return {"status": "no_data"}
 
-    # Read last line for latest metrics
     try:
-        with open(metrics_file) as f:
+        with open(metrics_file, encoding="utf-8") as f:
             lines = f.readlines()
             if not lines:
                 return {"status": "no_data"}
             latest = json.loads(lines[-1])
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    except Exception:
+        return {"status": "error", "message": "Failed to read metrics data"}
 
     capacity = latest.get("capacity", {})
     lan_free_gb = capacity.get("lan_free_bytes", 0) / (1024 ** 3) if capacity.get("lan_free_bytes") else 0
@@ -240,3 +311,80 @@ async def get_metrics():
         },
         "cloud": cloud_data,
     }
+
+
+@app.get("/api/system")
+async def get_system_status():
+    import shutil
+
+    config = _load_config()
+    paths = config.get("paths", {})
+
+    result = {"source": {}, "lan": {}, "manifest": {}}
+
+    source_drive = paths.get("source_drive", "")
+    if source_drive:
+        try:
+            usage = shutil.disk_usage(source_drive)
+            result["source"] = {
+                "free_gb": round(usage.free / (1024 ** 3), 1),
+                "total_gb": round(usage.total / (1024 ** 3), 1),
+                "used_pct": round(usage.used / usage.total * 100, 0),
+            }
+        except Exception:
+            result["source"] = {"error": "unavailable"}
+
+    lan_dest = paths.get("lan_destination", "")
+    if lan_dest and config.get("lan_backup", {}).get("enabled", True):
+        try:
+            usage = shutil.disk_usage(lan_dest)
+            result["lan"] = {
+                "free_gb": round(usage.free / (1024 ** 3), 1),
+                "total_gb": round(usage.total / (1024 ** 3), 1),
+                "used_pct": round(usage.used / usage.total * 100, 0),
+            }
+        except Exception:
+            result["lan"] = {"error": "unavailable"}
+
+    db_path = paths.get("database_path", "")
+    if db_path:
+        result["manifest"] = _get_manifest_info(db_path)
+    else:
+        result["manifest"] = {"error": "unavailable"}
+
+    return result
+
+
+@app.get("/api/history")
+async def get_run_history(limit: int = 7):
+    prefect_api_url = _load_prefect_api_url()
+
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_HTTPX_TIMEOUT) as client:
+            resp = await client.post(
+                f"{prefect_api_url}/flow_runs/filter",
+                json={
+                    "flow_runs": {"flow": {"name": {"any_": ["nightly-backup"]}}},
+                    "sort": "START_TIME_DESC",
+                    "limit": limit,
+                },
+            )
+            if resp.status_code == 200:
+                runs = resp.json()
+                return {
+                    "runs": [
+                        {
+                            "id": r["id"],
+                            "state_name": r.get("state_name"),
+                            "start_time": r.get("start_time"),
+                            "end_time": r.get("end_time"),
+                            "total_run_time": r.get("total_run_time"),
+                        }
+                        for r in runs
+                    ],
+                    "count": len(runs),
+                }
+    except Exception:
+        pass
+
+    return {"runs": [], "count": 0}

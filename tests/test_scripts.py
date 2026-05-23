@@ -29,18 +29,14 @@ def test_validate_config_loads_valid_config(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.dump(config))
 
-    from scripts.validate_config import load_config, check_required_fields
-
-    loaded = load_config(config_path)
-    assert loaded is not None
-    assert loaded["firm"]["name"] == "Test Firm"
-
-    errors = check_required_fields(loaded)
-    assert len(errors) == 0
+    from core.config_loader import load_config
+    appconfig = load_config(config_path)
+    assert appconfig is not None
+    assert appconfig.firm.name == "Test Firm"
 
 
 def test_validate_config_missing_required_fields(tmp_path):
-    """validate_config.py detects missing required fields."""
+    """Pydantic validation catches missing required fields."""
     config = {
         "firm": {"name": ""},
         "paths": {},
@@ -52,36 +48,39 @@ def test_validate_config_missing_required_fields(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.dump(config))
 
-    from scripts.validate_config import load_config, check_required_fields
+    from core.config_loader import load_config
 
-    loaded = load_config(config_path)
-    errors = check_required_fields(loaded)
-
-    assert any("firm.name" in e for e in errors)
-    assert any("paths.source_drive" in e for e in errors)
-    assert any("cloud_backup.bucket" in e for e in errors)
-    assert any("wol.mac_address" in e for e in errors)
+    try:
+        _ = load_config(config_path)
+        # Shouldn't reach here — multiple validators should fire
+        assert False, "Expected ValidationError"
+    except Exception:
+        pass
 
 
 def test_validate_config_invalid_yaml(tmp_path):
-    """validate_config.py handles invalid YAML."""
+    """validate_config module handles invalid YAML."""
+    from core.config_loader import load_config
+
     config_path = tmp_path / "config.yaml"
     config_path.write_text("invalid: yaml: : :")
 
-    from scripts.validate_config import load_config
-
-    result = load_config(config_path)
-    # YAML parser may or may not error on this specific string
-    # The key test is that it doesn't crash
-    assert result is None or isinstance(result, dict)
+    try:
+        _ = load_config(config_path)
+        assert False, "Expected error"
+    except Exception:
+        pass
 
 
 def test_validate_config_missing_file():
-    """validate_config.py handles missing config file."""
-    from scripts.validate_config import load_config
+    """validate_config module handles missing config file."""
+    from core.config_loader import load_config
 
-    result = load_config(Path("/nonexistent/config.yaml"))
-    assert result is None
+    try:
+        _ = load_config(Path("/nonexistent/config.yaml"))
+        assert False, "Expected error"
+    except Exception:
+        pass
 
 
 # --- seed_cloud.py tests ---

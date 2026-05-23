@@ -91,6 +91,13 @@ def generate_report_task(
     failed_runs = [r for r in runs if r.get("overall_status") == "FAILED"]
     partial_runs = [r for r in runs if r.get("overall_status") == "PARTIAL_FAILURE"]
 
+    # Find any anomaly/reconciliation/lint-audit occurrences from run summaries
+    run_summaries = _load_run_summaries(log_directory, start)
+    anomaly_runs = sum(1 for s in run_summaries if s.get("anomalies", {}).get("has_anomalies"))
+    drift_runs = sum(1 for s in run_summaries if s.get("reconciliation", {}).get("drift_found"))
+    lint_issues = sum(1 for s in run_summaries
+                      if s.get("lan_integrity_audit", {}).get("status") == "MISMATCH_DETECTED")
+
     report = {
         "report_type": report_type,
         "generated_at": now.isoformat(),
@@ -110,6 +117,9 @@ def generate_report_task(
         "total_lan_files_failed": total_lan_failed,
         "total_cloud_mismatches": total_cloud_mismatches,
         "total_cloud_missing": total_cloud_missing,
+        "anomaly_runs": anomaly_runs,
+        "drift_runs": drift_runs,
+        "lan_integrity_issues": lint_issues,
         "failed_run_details": [
             {
                 "flow_run_id": r.get("flow_run_id"),
@@ -151,25 +161,42 @@ def generate_report_task(
     return report
 
 
+def _load_run_summaries(log_directory: str, since: datetime) -> list[dict]:
+    """Load run summary JSONs from the log directory within the date range."""
+    from pathlib import Path
+    summaries: list[dict] = []
+    summary_file = Path(log_directory) / "run_summary.json"
+    if not summary_file.exists():
+        return summaries
+    try:
+        with open(summary_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        ts = data.get("timestamp", "")
+        if ts:
+            try:
+                run_time = datetime.fromisoformat(ts)
+                if run_time >= since:
+                    summaries.append(data)
+            except ValueError:
+                pass
+    except (json.JSONDecodeError, OSError):
+        pass
+    return summaries
+
+
 def _send_report_email(smtp_config: dict, report: dict):
-    """Send report via email."""
-    import smtplib
-    import keyring
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
+    """Send report via email using unified send_email with fallback."""
+    from core.email_utils import send_email
 
     smtp_host = smtp_config.get("smtp_host", "")
     smtp_port = smtp_config.get("smtp_port", 587)
     smtp_username = smtp_config.get("smtp_username", "")
     smtp_password_credential = smtp_config.get("smtp_password_credential", "BackupAgent_SMTP")
+    smtp_type = smtp_config.get("smtp_type", "STARTTLS")
     sender = smtp_config.get("sender", "")
     recipients = smtp_config.get("recipients", [])
 
     if not smtp_host or not sender or not recipients:
-        return
-
-    smtp_password = keyring.get_password("BackupAgent", smtp_password_credential)
-    if not smtp_password:
         return
 
     report_type = report["report_type"].capitalize()
@@ -181,10 +208,7 @@ def _send_report_email(smtp_config: dict, report: dict):
     minutes = int((avg_duration % 3600) // 60)
     avg_duration_str = f"{hours}h {minutes}m" if hours else f"{minutes}m"
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"📊 {report_type} Backup Report — {success_rate:.0f}% success rate"
-    msg["From"] = sender
-    msg["To"] = ", ".join(recipients)
+    subject = f"📊 {report_type} Backup Report — {success_rate:.0f}% success rate"
 
     body_text = (
         f"{report_type} Backup Report\n"
@@ -200,6 +224,22 @@ def _send_report_email(smtp_config: dict, report: dict):
         f"LAN Files Copied: {report['total_lan_files_copied']:,}\n"
         f"Cloud Mismatches: {report['total_cloud_mismatches']}\n"
     )
+    if report.get('anomaly_runs', 0) > 0:
+        body_text += f"\nAnomaly Alerts: {report['anomaly_runs']} run(s) flagged\n"
+    if report.get('drift_runs', 0) > 0:
+        body_text += f"Reconciliation Drift: {report['drift_runs']} occurrence(s)\n"
+    if report.get('lan_integrity_issues', 0) > 0:
+        body_text += f"LAN Integrity Issues: {report['lan_integrity_issues']} audit(s)\n"
+
+    anomaly_row = ""
+    drift_row = ""
+    integrity_row = ""
+    if report.get('anomaly_runs', 0) > 0:
+        anomaly_row = f"<tr><td><strong>Anomaly Alerts</strong></td><td style='color: orange;'>{report['anomaly_runs']} run(s)</td></tr>"
+    if report.get('drift_runs', 0) > 0:
+        drift_row = f"<tr><td><strong>Reconciliation Drift</strong></td><td style='color: orange;'>{report['drift_runs']} occurrence(s)</td></tr>"
+    if report.get('lan_integrity_issues', 0) > 0:
+        integrity_row = f"<tr><td><strong>LAN Integrity</strong></td><td style='color: orange;'>{report['lan_integrity_issues']} audit(s)</td></tr>"
 
     body_html = f"""
     <html><body>
@@ -217,14 +257,22 @@ def _send_report_email(smtp_config: dict, report: dict):
         <tr><td><strong>Deleted Files</strong></td><td>{report['total_deleted_files']}</td></tr>
         <tr><td><strong>LAN Files Copied</strong></td><td>{report['total_lan_files_copied']:,}</td></tr>
         <tr><td><strong>Cloud Mismatches</strong></td><td>{report['total_cloud_mismatches']}</td></tr>
+        {anomaly_row}
+        {drift_row}
+        {integrity_row}
     </table>
     </body></html>
     """
 
-    msg.attach(MIMEText(body_text, "plain"))
-    msg.attach(MIMEText(body_html, "html"))
-
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.starttls()
-        server.login(smtp_username, smtp_password)
-        server.sendmail(sender, recipients, msg.as_string())
+    send_email(
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_username=smtp_username,
+        smtp_type=smtp_type,
+        smtp_password_credential=smtp_password_credential,
+        sender=sender,
+        recipients=recipients,
+        subject=subject,
+        body_text=body_text,
+        body_html=body_html,
+    )

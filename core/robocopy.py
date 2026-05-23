@@ -23,6 +23,7 @@ class RobocopyResult:
     files_copied: int = 0
     bytes_copied: int = 0
     files_failed: int = 0
+    retry_count: int = 0
     output: str = ""
 
 
@@ -80,6 +81,18 @@ def _parse_robocopy_output(output: str) -> dict[str, int]:
             continue
 
     return result
+
+
+def _parse_robocopy_retries(output: str) -> int:
+    """Count Retry lines in Robocopy output.
+
+    Robocopy with /R:n retries n times per failed file. Each attempt produces
+    a line like "Error 5... Retrying..." in the output. Counting these reveals
+    whether certain files repeatedly fail across runs.
+    """
+    import re
+
+    return len(re.findall(r"\bRetrying\b", output, re.IGNORECASE))
 
 
 def _parse_failed_files(output: str, source_drive: str) -> set[str]:
@@ -210,6 +223,7 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
             files_copied=stats["files_copied"],
             bytes_copied=stats["bytes_copied"],
             files_failed=stats["files_failed"],
+            retry_count=_parse_robocopy_retries(output_text),
             output=output_text,
         )
 
@@ -218,22 +232,11 @@ def run_robocopy(config: AppConfig, scan_result: ScanResult, db: ManifestDB) -> 
             f"{stats['bytes_copied']} bytes, {stats['files_failed']} failed"
         )
 
-        # Update manifest for backed up files
-        # On partial failure, only mark files that actually succeeded
+        # Compute checksums for new files that were successfully backed up
         if status in ("LAN_COMPLETE", "LAN_PARTIAL"):
             all_changed = [f.relative_path for f in scan_result.new_files + scan_result.modified_files]
             failed_paths = _parse_failed_files(output_text, paths_config.source_drive)
 
-            # Only mark files that were NOT in the failed list
-            successful_paths = [p for p in all_changed if p not in failed_paths]
-
-            if failed_paths:
-                logger.warning(f"Robocopy failed on {len(failed_paths)} files: {list(failed_paths)[:10]}")
-
-            if successful_paths:
-                db.batch_mark_lan_backed_up(successful_paths)
-
-            # Compute checksums for new files that were successfully backed up
             for file_info in scan_result.new_files:
                 if file_info.relative_path in failed_paths:
                     continue

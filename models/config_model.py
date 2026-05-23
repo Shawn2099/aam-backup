@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import List
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class FirmConfig(BaseModel):
@@ -28,7 +28,6 @@ class PathsConfig(BaseModel):
     @field_validator("source_drive")
     @classmethod
     def source_drive_exists(cls, v: str) -> str:
-        # Skip validation on non-Windows systems for testing
         import platform
         if platform.system() != "Windows":
             return v
@@ -42,6 +41,30 @@ class PathsConfig(BaseModel):
         if not re.match(r"^\\\\.+\\.+$", v):
             raise ValueError("paths.lan_destination must be a UNC path starting with \\\\")
         return v
+
+    @field_validator("log_directory")
+    @classmethod
+    def log_dir_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("paths.log_directory cannot be empty")
+        return v.strip()
+
+    @field_validator("database_path")
+    @classmethod
+    def db_path_format(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("paths.database_path cannot be empty")
+        v = v.strip()
+        if not v.endswith(".db"):
+            raise ValueError("paths.database_path must end with .db")
+        return v
+
+    @field_validator("rclone_temp_directory")
+    @classmethod
+    def rclone_temp_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("paths.rclone_temp_directory cannot be empty")
+        return v.strip()
 
 
 class ScheduleConfig(BaseModel):
@@ -63,6 +86,8 @@ class BackupScopeConfig(BaseModel):
     exclude_folders: List[str] = Field(default_factory=list)
     exclude_extensions: List[str] = Field(default_factory=lambda: [".lnk", ".tmp", ".temp"])
     exclude_patterns: List[str] = Field(default_factory=lambda: ["~$*", "desktop.ini", "Thumbs.db"])
+    full_rescan_every_n_runs: int = Field(default=30, ge=1)
+    """Perform a full re-scan (checksum ALL files, clean stale entries) every N runs."""
 
     @field_validator("exclude_extensions")
     @classmethod
@@ -71,6 +96,17 @@ class BackupScopeConfig(BaseModel):
             if not ext.startswith("."):
                 raise ValueError(f"exclude_extensions entry must start with '.': {ext}")
         return [e.lower() for e in v]
+
+    @field_validator("exclude_folders")
+    @classmethod
+    def folders_not_empty(cls, v: List[str]) -> List[str]:
+        result = []
+        for folder in v:
+            stripped = folder.strip()
+            if not stripped:
+                raise ValueError("exclude_folders entries cannot be empty or whitespace-only")
+            result.append(stripped)
+        return result
 
 
 class LanBackupConfig(BaseModel):
@@ -91,11 +127,9 @@ class WolConfig(BaseModel):
     @field_validator("mac_address")
     @classmethod
     def valid_mac_when_enabled(cls, v: str, info) -> str:
-        values = info.data
-        if values.get("enabled", True) and not v:
-            # Allow empty MAC during config reconstruction (preflight rebuild)
-            # The actual flow validates this before WoL runs
-            return v
+        enabled = info.data.get("enabled", True)
+        if enabled and not v.strip():
+            raise ValueError("wol.mac_address is required when wol.enabled is true")
         if v and not re.match(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$", v):
             raise ValueError("wol.mac_address format must be XX:XX:XX:XX:XX:XX")
         return v
@@ -115,12 +149,19 @@ class VssConfig(BaseModel):
     fallback_on_failure: bool = True
     """If VSS creation fails, fall back to direct backup instead of failing."""
 
+    @field_validator("drive_letter")
+    @classmethod
+    def valid_drive_letter(cls, v: str) -> str:
+        if not re.match(r"^[A-Za-z]$", v):
+            raise ValueError("vss.drive_letter must be a single letter A-Z")
+        return v.upper()
+
 
 class CloudArchiveConfig(BaseModel):
     """Yearly archive configuration for moving old FY data from active to archive prefix."""
     enabled: bool = True
     """Enable yearly archive task."""
-    trigger_date: str = "04-15"
+    trigger_date: str = "04-01"
     """Date to trigger archive (MM-DD format). Runs on first backup after this date each year."""
     active_path: str = "D_Drive_Backup/active/"
     """GCS prefix for active (current FY) data."""
@@ -222,6 +263,30 @@ class CloudBackupConfig(BaseModel):
             raise ValueError(f"cloud_backup.storage_class must be one of: {', '.join(sorted(valid))}")
         return v.upper()
 
+    @field_validator("gcs_location")
+    @classmethod
+    def valid_gcs_region(cls, v: str) -> str:
+        gcs_regions = {
+            "asia-east1", "asia-east2", "asia-northeast1", "asia-northeast2",
+            "asia-northeast3", "asia-south1", "asia-south2", "asia-southeast1",
+            "asia-southeast2", "australia-southeast1", "australia-southeast2",
+            "europe-central2", "europe-north1", "europe-southwest1",
+            "europe-west1", "europe-west2", "europe-west3", "europe-west4",
+            "europe-west6", "europe-west8", "europe-west9", "europe-west10",
+            "europe-west12", "me-central1", "me-central2", "me-west1",
+            "northamerica-northeast1", "northamerica-northeast2",
+            "southamerica-east1", "southamerica-west1",
+            "us-central1", "us-east1", "us-east4", "us-east5",
+            "us-south1", "us-west1", "us-west2", "us-west3", "us-west4",
+            # Dual-region
+            "asia1", "eur4", "eur5", "nam4",
+            # Multi-region
+            "asia", "eu", "us",
+        }
+        if v not in gcs_regions:
+            raise ValueError(f"cloud_backup.gcs_location '{v}' is not a valid GCS region")
+        return v
+
 
 class CloudCredentialsConfig(BaseModel):
     credential_name: str = "BackupAgent_GCS"
@@ -246,6 +311,7 @@ class NotificationsConfig(BaseModel):
     smtp_port: int = 587
     smtp_username: str = ""
     smtp_password_credential: str = "BackupAgent_SMTP"
+    smtp_type: str = "STARTTLS"  # SSL, STARTTLS, or INSECURE
     sender: str = ""
     recipients: List[str] = Field(default_factory=list)
     send_on_every_run: bool = True
@@ -253,6 +319,54 @@ class NotificationsConfig(BaseModel):
     weekly_summary_enabled: bool = True
     weekly_summary_day: str = "monday"
     weekly_summary_time: str = "08:00"
+
+    @field_validator("smtp_type")
+    @classmethod
+    def valid_smtp_type(cls, v: str) -> str:
+        valid = {"SSL", "STARTTLS", "INSECURE"}
+        if v.upper() not in valid:
+            raise ValueError(f"notifications.smtp_type must be one of: {', '.join(sorted(valid))}")
+        return v.upper()
+
+    @field_validator("sender")
+    @classmethod
+    def valid_sender_email(cls, v: str) -> str:
+        if not v:
+            return v
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", v):
+            raise ValueError("notifications.sender must be a valid email address")
+        return v.strip()
+
+    @field_validator("recipients")
+    @classmethod
+    def valid_recipients(cls, v: List[str]) -> List[str]:
+        result = []
+        for addr in v:
+            stripped = addr.strip()
+            if not stripped:
+                raise ValueError("notifications.recipients entries cannot be empty")
+            if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", stripped):
+                raise ValueError(f"notifications.recipients contains invalid email: {stripped}")
+            result.append(stripped)
+        return result
+
+    @field_validator("weekly_summary_day")
+    @classmethod
+    def valid_weekday(cls, v: str) -> str:
+        valid = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+        if v.lower() not in valid:
+            raise ValueError(f"notifications.weekly_summary_day must be a valid weekday (got: {v})")
+        return v.lower()
+
+    @field_validator("weekly_summary_time")
+    @classmethod
+    def valid_summary_time(cls, v: str) -> str:
+        if not re.match(r"^\d{2}:\d{2}$", v):
+            raise ValueError("notifications.weekly_summary_time must be HH:MM format")
+        hour, minute = map(int, v.split(":"))
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError("notifications.weekly_summary_time has invalid hour/minute")
+        return v
 
 
 class AlertsConfig(BaseModel):
@@ -264,6 +378,8 @@ class AlertsConfig(BaseModel):
     """Alert when backup run duration exceeds this threshold (minutes)."""
     backup_not_run_warning_days: int = Field(default=2, ge=1, le=30)
     """Alert when no backup run has been detected for this many days (GAP #3)."""
+    source_free_space_warning_gb: int = Field(default=5, ge=1)
+    """Alert when source drive free space drops below this threshold (GB)."""
 
 
 class TestRestoreConfig(BaseModel):
@@ -272,6 +388,59 @@ class TestRestoreConfig(BaseModel):
     """Number of random files to verify per run."""
     run_every_n_backups: int = Field(default=7, ge=1)
     """Run test restore verification every N backup runs."""
+
+
+class LanIntegrityConfig(BaseModel):
+    enabled: bool = True
+    """Enable periodic full LAN integrity audit (random sample checksum verification)."""
+    run_every_n_backups: int = Field(default=7, ge=1)
+    """Run full LAN integrity audit every N backup runs (default 7 = weekly)."""
+    sample_count: int = Field(default=500, ge=10, le=5000)
+    """Number of random files to checksum-verify per audit."""
+    checksum_concurrency: int = Field(default=4, ge=1, le=16)
+    """Number of parallel checksum workers (uses ProcessPoolExecutor)."""
+
+
+class ReconciliationConfig(BaseModel):
+    enabled: bool = True
+    """Enable periodic destination reconciliation."""
+    run_every_n_backups: int = Field(default=7, ge=1)
+    """Run reconciliation every N backup runs (default 7 = weekly)."""
+    auto_correct: bool = True
+    """Auto-correct drift by running full sync when drift is detected."""
+
+    @field_validator("auto_correct")
+    @classmethod
+    def warn_auto_correct_when_disabled(cls, v: bool, info) -> bool:
+        if v and not info.data.get("enabled", True):
+            raise ValueError(
+                "reconciliation.auto_correct cannot be true when reconciliation.enabled is false"
+            )
+        return v
+
+
+class AnomalyDetectionConfig(BaseModel):
+    enabled: bool = True
+    """Enable anomaly detection to flag suspicious scan patterns."""
+    max_file_count_spike_ratio: float = Field(default=5.0, ge=1.0, le=100.0)
+    """Max ratio of changed files vs 7-day average before warning (default 5x)."""
+    max_deletion_spike_ratio: float = Field(default=10.0, ge=1.0, le=1000.0)
+    """Max ratio of deleted files vs 7-day average before warning (default 10x)."""
+    silence_days_alert: int = Field(default=7, ge=1, le=365)
+    """Alert when no file changes detected for this many consecutive days."""
+    lookback_window_days: int = Field(default=14, ge=3, le=90)
+    """Number of days of JSONL metrics to analyze for baseline."""
+
+
+class ManifestBackupConfig(BaseModel):
+    enabled: bool = True
+    """Enable manifest.db backup after each successful run."""
+    lan_path: str = "_manifest/"
+    """Relative path on LAN destination for manifest backups."""
+    cloud_path: str = "_manifest/"
+    """Relative path on GCS for manifest backups (last-resort fallback)."""
+    retention_count: int = Field(default=7, ge=1, le=30)
+    """Number of historical manifest backups to retain."""
 
 
 class AppConfig(BaseModel):
@@ -291,6 +460,24 @@ class AppConfig(BaseModel):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     test_restore: TestRestoreConfig = Field(default_factory=TestRestoreConfig)
+    reconciliation: ReconciliationConfig = Field(default_factory=ReconciliationConfig)
+    manifest_backup: ManifestBackupConfig = Field(default_factory=ManifestBackupConfig)
+    anomaly_detection: AnomalyDetectionConfig = Field(default_factory=AnomalyDetectionConfig)
+    lan_integrity: LanIntegrityConfig = Field(default_factory=LanIntegrityConfig)
+
+    @model_validator(mode="after")
+    def cross_field_validation(self) -> "AppConfig":
+        # C15: Cloud enabled requires non-empty credential name
+        if self.cloud_backup.enabled and not self.cloud_credentials.credential_name.strip():
+            raise ValueError(
+                "cloud_credentials.credential_name is required when cloud_backup.enabled is true"
+            )
+        # C16: LAN enabled requires non-empty lan_destination
+        if self.lan_backup.enabled and not self.paths.lan_destination.strip():
+            raise ValueError(
+                "paths.lan_destination is required when lan_backup.enabled is true"
+            )
+        return self
 
     @property
     def backup_destinations(self) -> dict:

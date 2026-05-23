@@ -50,11 +50,12 @@ def gcs(
         raise typer.Exit(1)
 
     try:
-        cmd = ["cmdkey", f"/add:{name}", "/user:service_account", f"/pass:{path.resolve()}"]
+        resolved = str(path.resolve())
+        cmd = ["cmdkey", f"/add:{name}", "/user:service_account", f"/pass:{resolved}"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             typer.echo(f"  GCS credential '{name}' stored successfully.")
-            typer.echo(f"  Key file: {path.resolve()}")
+            typer.echo(f"  Key file: {resolved}")
         else:
             typer.echo(f"  Failed: {result.stderr.strip()}")
             raise typer.Exit(1)

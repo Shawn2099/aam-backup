@@ -166,10 +166,10 @@ echo.
 REM --- Create work pool ---
 echo [7/7] Creating Prefect work pool...
 timeout /t 3 /nobreak >nul
-"%PREFECT_EXE%" work-pool create default --type process 2>nul
+"%PREFECT_EXE%" workpool create default --type process 2>nul
 if errorlevel 1 (
     echo Work pool may already exist or server not ready yet.
-    echo Run manually: prefect work-pool create default --type process
+    echo Run manually: prefect workpool create default --type process
 ) else (
     echo Work pool 'default' created
 )

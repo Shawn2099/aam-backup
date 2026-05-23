@@ -1,160 +1,127 @@
-# DECISION LOG — Backup Automation System
+# ARCHITECTURAL DECISIONS — Backup Automation System
 
-This file tracks every decision, change, and clarification made during planning and development. New sessions should read this to understand context.
+## Decision Log
 
-## Decisions Made During Planning
+> Format: Decision ID | Topic | Status | Summary
 
-### 2026-05-18 — Mirror Mode for Both Destinations
-- **Decision:** Both LAN and cloud destinations are true mirrors of the source
-- **Before:** LAN used Robocopy `/XO` (incremental, no deletion mirroring), cloud used `rclone sync` (mirror)
-- **After:** LAN uses Robocopy `/MIR` (true mirror, deletions propagate), cloud uses `rclone sync` (true mirror, deletions propagate)
-- **Reason:** Client accepted mirror behavior for both destinations
-- **Impact:** Deleted files on source are deleted on both destinations immediately
+---
 
-### 2026-05-18 — No Custom Soft Delete or Versioning
-- **Decision:** Removed soft delete, custom file versioning, anomaly detection, and integrity verification from scope permanently
-- **Before:** These were planned as Phase 2 features with stubs/hooks in Phase 1
-- **After:** Not built at all. No stubs, no hooks, no Phase 2 provisions for these features
-- **Reason:** Client is comfortable with mirror behavior + cloud native versioning
-- **Impact:** Simplified codebase, no Phase 2 migration scripts needed, schema is final
+### D-001: Deletion Handling
+**Status:** CONFIRMED  
+**Topic:** How manifest handles files deleted from source  
+**Decision:** Current approach is correct — scanner deletes from manifest immediately when file gone from D:\. Robocopy/Rclone enforce source = destination. Manifest is a reporting layer for source state, not destination tracking.  
+**Gap:** Need reporting/alerting when destinations diverge from source.
 
-### 2026-05-18 — GCS Native Versioning Configuration
-- **Decision:** GCS bucket configured with object versioning retaining 1 older version, lifecycle rule deletes older versions after 90 days
-- **Details:** Set during deployment, not in code. Latest data always present on cloud. Previous version retained for 90 days as safety net against accidental deletion.
-- **Impact:** Cloud has 90-day recovery window for accidental deletions. LAN has no versioning — deletions are immediate.
+---
 
-### 2026-05-18 — Deleted Files Removed from Manifest
-- **Decision:** When files are deleted from source, they are removed from manifest.db (not just logged)
-- **Before:** Deleted files were logged but kept in manifest
-- **After:** `db.delete_entry(relative_path)` called for each deleted file during scan
-- **Reason:** Mirror tools handle deletion, manifest should reflect reality
-- **Impact:** Manifest accurately tracks only files that exist on source
+### D-002: Full Re-Scan Frequency
+**Status:** IMPLEMENTED  
+**Topic:** How often to checksum ALL files regardless of size+mtime  
+**Decision:** Every 30 runs (monthly). xxHash64 on all 200K+ files. Catches content-change-with-same-size edge cases. Inherently cleans stale manifest entries via set difference.  
+**Config:** `backup_scope.full_rescan_every_n_runs: 30`  
+**Implementation:**  
+- `ManifestDB.get_and_increment_run_counter()` — thread-safe persistent counter in SQLite  
+- `scan_task()` checks run number % interval → passes `is_full_rescan` flag  
+- `scan_drive()` with `is_full_rescan=True` computes checksums for ALL files (not just size/mtime changed)  
+- Files with `PENDING_CHECKSUM` from first scan get their first real checksum during full rescan  
+- Files with pending checksum that were actually modified (size/mtime differ) are correctly classified as modified  
+**Files changed:** `core/scanner.py`, `core/manifest_db.py`, `tasks/scan_task.py`, `models/config_model.py`, `tests/test_scanner.py`
 
-### 2026-05-18 — Service Account for Deployment
-- **Decision:** Service account provided during deployment (not domain admin)
-- **Before:** PrefectWorker ran as `caaam\Administrator` (domain admin)
-- **After:** PrefectWorker runs as least-privilege service account provided by client
-- **Reason:** Security best practice
-- **Impact:** Deployment scripts use `[SERVICE_ACCOUNT]` placeholder, ACL commands reference service account
+---
 
-### 2026-05-18 — Pre-Flight Checks Deferred
-- **Decision:** Pre-flight checks (disk space, GCS quota, connectivity, etc.) added after core backup logic is complete
-- **Reason:** Build core first, add safety checks later
-- **Impact:** Core development can proceed without pre-flight module. Pre-flight checks will be added in Phase 7.
+### D-003: Nth Run Destination Reconciliation
+**Status:** IMPLEMENTED  
+**Topic:** Periodic full audit of both destinations against source  
+**Decision:** Every Nth run (default 7 = weekly), after normal backup completes, audit both destinations against source manifest. If ANY drift found, run full `robocopy /MIR` and `rclone sync` to auto-correct. Log drift % in run summary (visible on failure/review, not a separate user alert).  
+**Implementation:**  
+- `tasks/reconciliation_task.py` — orchestrates: walk LAN → compare manifest → `rclone check` GCS → auto-correct if drift  
+- Reuses existing modules: `core/robocopy.run_robocopy`, `core/rclone.run_rclone`, `core/rclone.run_rclone_check`, `core/verify.verify_lan_checksums`  
+- Configurable via `reconciliation.run_every_n_backups`, `reconciliation.enabled`, `reconciliation.auto_correct`  
+- Integrated into `flow.py` after manifest backup, before cloud integrity check  
+**Files changed:** `tasks/reconciliation_task.py` (new), `models/config_model.py` (ReconciliationConfig), `flow.py`, `config.yaml`
 
-### 2026-05-18 — Removed Phase 2 Provision Stubs
-- **Decision:** Removed all Phase 2 provision stubs from the codebase plan
-- **Removed:**
-  - `plant_canary_files.py` script
-  - UI Phase 2 provision divs (`history-panel`, `restore-panel`, `logs-panel`)
-  - Config sections: `soft_delete`, `lan_versioning`, `anomaly_detection`, `integrity_verification`
-  - Database Phase 2 columns and tables
-  - `ui.password_hash` config key
-- **Reason:** No Phase 2 planned for these features
-- **Impact:** Cleaner codebase, no dead code or unused stubs
+---
 
-## Pending Decisions (To Be Resolved During Deployment)
+### D-009: Destination Independence
+**Status:** CONFIRMED  
+**Topic:** No files missed if one destination/tool is disabled  
+**Decision:** Scanner is the single source of truth — classifies ALL files regardless of destination status. Each backup task checks its own `enabled` flag independently. If LAN disabled, Cloud still gets everything. If Cloud disabled, LAN still gets everything. Dry run comparison skips disabled destinations.  
+**Rationale:** Latest data must always be preserved to at least one destination.
 
-### GCS Bucket Lifecycle Configuration
-- **Status:** Confirmed — 90-day retention for older versions
-- **Action:** Set during deployment via GCS console or `gsutil`
-- **Details:** Object versioning ON, retain 1 older version, lifecycle rule deletes older versions after 90 days
+---
 
-### Service Account Permissions
-- **Status:** To be provided during deployment
-- **Required permissions:**
-  - Read access to D:\ (source drive)
-  - Read/write access to `\\192.168.10.10\hp srv manual backup$` (LAN share)
-  - Read/write access to `C:\BackupAgent\` (agent directory)
-  - Read access to `C:\BackupAgent\gcs_service_account.json` (GCS key)
-  - Access to Windows Credential Manager for `BackupAgent_GCS` credential
+### D-004: GCS Quota Check
+**Status:** SKIPPED  
+**Topic:** Check GCS bucket space/quota in pre-flight  
+**Decision:** Not needed. Only `rclone about` for accessibility confirmation. No space checks — GCS is effectively unlimited.
 
-## P0 Fixes Completed (2026-05-18)
+---
 
-### 1. Manifest Drift — Per-File Failure Tracking
-- **File:** `core/robocopy.py`
-- **Change:** Added `_parse_failed_files()` to extract failed file paths from Robocopy output. Manifest now only marks files that actually succeeded, not all changed files.
-- **Impact:** Accurate manifest state on partial failures. Failed files remain `pending` or retain previous checksum.
+### D-005: Source Free Space Check
+**Status:** IMPLEMENTED  
+**Topic:** Keep 5GB source drive free space check as system health indicator  
+**Decision:** 5GB threshold, configurable via `alerts.source_free_space_warning_gb` in `config.yaml`. Warning only — never blocks backup run. If D:\ is truly full, robocopy/rclone fail naturally and trigger failure notification.  
+**Alerting:** Log warning + UI dashboard indicator + included in failure email if backup fails and low space was a contributing factor.  
+**Implementation:** `core/preflight.py` uses `config.alerts.source_free_space_warning_gb` for `check_disk_space()`. Added to `AlertsConfig` model.  
+**Files changed:** `models/config_model.py` (source_free_space_warning_gb field), `core/preflight.py` (configurable threshold)
 
-### 2. `file_size` Column Overflow
-- **File:** `models/manifest_model.py`
-- **Change:** `Integer` → `BigInteger` for `file_size` column.
-- **Impact:** Supports files >2GB (max ~9.2 quintillion bytes vs ~2.1 billion).
+---
 
-### 3. Email Notifications in `on_failure` Hook
-- **File:** `flow.py`
-- **Change:** Added `_send_failure_email()` using `smtplib` + `keyring` for credential retrieval. Wired into `_on_backup_failure` hook. Sends HTML + plain text emails.
-- **Impact:** Failure alerts sent immediately without relying on Prefect UI automation setup.
+### D-006: Dry Run Comparison
+**Status:** IMPLEMENTED  
+**Topic:** Compare robocopy /L vs rclone --dry-run deletion counts before actual backup  
+**Decision:** Run every backup run. Dry run uses ALL the same flags/exclusions as the real run (`/XF`, `/XD`, `--exclude`, retries, timeouts, etc.).  
+**Validation:**  
+- Dry run exit code checked — failure means the real run would also fail (credential expiry, share inaccessible, permissions revoked)  
+- If LAN dry run fails → skip LAN backup task (Cloud still runs)  
+- If Cloud dry run fails → skip Cloud backup task (LAN still runs)  
+- If both dry runs fail → fail entire flow immediately (triggers failure email, saves hours of wasted execution)  
+**Deletion count comparison:** `compare_dry_run_deletions()` compares robocopy vs rclone vs scanner deletion counts. Threshold: 10% delta.  
+- Delta ≤ 10% → silent audit log only  
+- Delta > 10% → fail the flow early with clear error message  
+**Implementation:**  
+- `core/verify.py` — `run_dry_run_lan()` and `run_dry_run_cloud()` now accept exclusion params and use identical flags as real runs  
+- `core/verify.py` — `compare_dry_run_deletions()` for deletion count comparison  
+- `core/preflight.py` — `check_dry_run_lan()` and `check_dry_run_cloud()` now validate exit codes (FAIL on dry run failure)  
+**Files changed:** `core/verify.py`, `core/preflight.py`, `config.yaml`
 
-### 4. Rclone Exit Code 5 → CLOUD_PARTIAL
-- **File:** `core/rclone.py`
-- **Change:** Exit code 5 mapped to `CLOUD_PARTIAL` instead of `CLOUD_FAILED`.
-- **Impact:** Prefect retries work correctly for transient network errors.
+---
 
-### 5. Robocopy `/XJ` Flag
-- **File:** `core/robocopy.py`
-- **Change:** Added `/XJ` to Robocopy command to exclude junction points.
-- **Impact:** Prevents infinite loops from junction points and backs up only real files.
+### D-007: Checksum Verification
+**Status:** IMPLEMENTED  
+**Topic:** Improve LAN verification beyond 5-file sample, GCS integrity  
+**Decision:**  
+- LAN: Verify ALL changed files (xxHash64 source vs LAN destination) after every robocopy run. Removed random sampling.  
+- GCS: `rclone check` with `--differ`, `--missing-on-dst`, `--error` flags writing to temp files (one path per line). Zero stdout parsing. Reads server-side MD5 from GCS metadata — zero egress cost.  
+- `_read_path_file()` helper reads rclone output files reliably.  
+- Nth run reconciliation: Skip `rclone check --download` (unnecessary bandwidth cost). Server-side MD5 comparison is sufficient.  
+**Files changed:** `core/verify.py`, `core/rclone.py`, `tasks/lan_task.py`, `tests/test_verify.py`  
+**Facts confirmed:** Robocopy has NO hash verification. GCS stores MD5+CRC32C as object metadata retrievable via API without downloading. rclone `--differ`/`--missing-on-dst`/`--error` flags confirmed in rclone v1.74.1 docs.
 
-### 6. Test Suite Verification
-- **Result:** 115 tests passing in 7.23s.
-- **Note:** ROS pytest plugins cause conflicts; run with `-p no:launch_testing` if needed.
+---
 
-## Architecture Decisions (From plan.md)
+### D-008: Manifest Backup Strategy
+**Status:** IMPLEMENTED  
+**Topic:** WAL checkpoint before copy, SHA256 hash for integrity, corruption recovery  
+**Decision:**  
+- **Where:** LAN destination preferred (`_manifest/` subfolder). GCS also synced but only as last-resort fallback (download costs).  
+- **Retention:** Last 7 daily backups (1 week of history).  
+- **Integrity:** SHA256 hash stored in separate `.sha256` file alongside each backup copy.  
+- **When:** After each successful run — WAL checkpoint first, then copy.  
+- **Recovery order:**  
+  1. Try LAN `_manifest/` latest backup (verify SHA256)  
+  2. If LAN unavailable, try GCS `_manifest/` latest backup (verify SHA256)  
+  3. If both fail, rebuild manifest fresh via full scan — no failure, just a warning  
+**Implementation:**  
+- `tasks/manifest_backup_task.py` — enhanced with `_wal_checkpoint()`, `_compute_sha256()`, `_prune_old_backups()`, cloud pruning  
+- Configurable via `manifest_backup.enabled`, `lan_path`, `cloud_path`, `retention_count`  
+- `flow.py` passes new config params to `backup_manifest_db_task()`  
+**Files changed:** `tasks/manifest_backup_task.py`, `models/config_model.py` (ManifestBackupConfig), `flow.py`, `config.yaml`
 
-### Robocopy Flags
-- `/MIR` — Mirror mode (copies new/changed, deletes from destination what's deleted from source)
-- `/Z` — Restartable mode (handles network interruptions)
-- `/R:[n]` — Retry count from config
-- `/W:[n]` — Wait time between retries from config
-- `/NP` — No progress percentage
-- `/BYTES` — Show file sizes in bytes
-- `/TEE` — Output to console and log file
-- `/UNILOG+` — Append to Unicode log file
-- `/XD` — Exclude directories
-- `/XF` — Exclude files by pattern
+---
 
-### Rclone Flags
-- `sync` — Makes destination match source
-- `--config` — Temp config file with ACL
-- `--filter-from` — Temp filter file
-- `--bwlimit` — Bandwidth limit from config
-- `--gcs-chunk-size` — Chunk size for multipart uploads
-- `--transfers 4` — Parallel file transfers
-- `--checkers 8` — Parallel file comparison threads
-- `--retries` — Internal retries
-- `--retries-sleep 30s` — Wait between retries
-- `--stats 300s` — Transfer stats interval
-- `--log-level INFO` — Verbosity
-- `--use-json-log` — Structured JSON log output
-- `--no-traverse` — Don't list remote before transfer
+## Pending Discussions
 
-### Checksum Strategy
-- Algorithm: xxHash64 (not MD5, not SHA256)
-- Reason: Speed for 200K+ files, collision risk negligible for change detection
-- Computed: Only when size or mtime differs from manifest
-- New files: Checksum computed after backup confirmation (not during scan)
-- Chunk size: 8MB reads to avoid loading large files into memory
-
-### Concurrency Model
-- `ThreadPoolTaskRunner(max_workers=2)` for concurrent LAN + cloud backup
-- Both tasks submitted via `task.submit()`, flow waits via `future.result()`
-- ManifestDB single shared instance passed to all tasks
-- `threading.Lock` on all writes, SQLite WAL mode for concurrent reads
-
-### Database WAL Mode
-- Set on every connection (not just creation)
-- PRAGMA journal_mode=WAL verified on every connection
-- PRAGMA foreign_keys=ON
-- PRAGMA synchronous=NORMAL
-- PRAGMA cache_size=10000
-
-## Notes for New Sessions
-
-1. **Read `AGENTS.md` first** — it contains the full project context, architecture, config schema, database schema, and development plan.
-2. **Read `plan.md` for detailed specifications** — it contains the complete technical specification with every flag, exit code, and algorithm defined.
-3. **This file (`DECISIONS.md`)** tracks all changes and decisions made during planning. Use it to understand why certain decisions were made.
-4. **The project is on Windows Server 2016** — all paths use Windows format, all binaries are Windows executables.
-5. **Development is happening on Linux** — code is written for Windows but developed/tested on Linux. Use `pathlib.Path` for cross-platform compatibility.
-6. **No hardcoded values** — this is the most important rule. Everything comes from config or Credential Manager.
-7. **Service account is provided during deployment** — don't assume domain admin. Use placeholders in scripts.
+| Topic | Key Question |
+|-------|-------------|
+| None | All decisions finalized. Ready for implementation phase. |

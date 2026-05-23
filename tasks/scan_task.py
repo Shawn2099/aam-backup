@@ -32,7 +32,17 @@ def scan_task(config: AppConfig, database_path: str) -> ScanResult:
 
     db = ManifestDB(database_path)
     try:
-        result = scan_drive(config, db)
+        run_number = db.get_and_increment_run_counter()
+        full_rescan_interval = config.backup_scope.full_rescan_every_n_runs
+        is_full_rescan = (run_number % full_rescan_interval == 0)
+
+        if is_full_rescan:
+            logger.info(
+                f"Full re-scan triggered (run #{run_number}, every {full_rescan_interval} runs). "
+                "Computing checksums for ALL files."
+            )
+
+        result = scan_drive(config, db, is_full_rescan=is_full_rescan)
         logger.info(
             f"Scan complete: {len(result.new_files)} new, "
             f"{len(result.modified_files)} modified, "

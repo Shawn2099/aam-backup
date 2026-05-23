@@ -156,7 +156,7 @@
 16. Collect metrics (`collect_metrics_task`)
 17. SQLite maintenance (`maintain_manifest_db_task`)
 18. Check LAN disk space, backup duration warnings
-19. Test restore verification (every N runs, `test_restore_task`)
+19. Test restore verification (every N runs, `restore_verify_task`)
 20. Generate weekly/monthly reports (`generate_report_task`)
 21. Backup config.yaml to LAN and cloud (`backup_config_task`)
 22. Finally: delete VSS snapshot, release ConcurrencyGuard
@@ -184,7 +184,7 @@
 | `backup_manifest_db_task` | `tasks/manifest_backup_task.py` | 0 | - | Backs up manifest.db to LAN and cloud |
 | `maintain_manifest_db_task` | `tasks/maintenance_task.py` | 0 | - | SQLite VACUUM + WAL checkpoint |
 | `backup_logs_cloud_task` | `tasks/log_backup_task.py` | 0 | - | Syncs log files to cloud `_logs/` prefix |
-| `test_restore_task` | `tasks/test_restore_task.py` | 0 | 1h | Periodic random file verification from LAN + GCS |
+| `restore_verify_task` | `tasks/restore_verify_task.py` | 0 | 1h | Periodic random file verification from LAN + GCS |
 | `generate_report_task` | `tasks/report_task.py` | 0 | - | Generates weekly/monthly email reports |
 | `create_vss_snapshot_task` | `tasks/vss_task.py` | 0 | - | Creates VSS shadow copy |
 | `delete_vss_snapshot_task` | `tasks/vss_task.py` | 0 | - | Deletes VSS shadow copy |
@@ -330,11 +330,10 @@
 
 ## 6. KNOWN ISSUES / GAPS
 
-### 6.1 Test Fixture Error (Minor)
+### 6.1 Test Fixture Error (Resolved)
 - **File:** `tests/test_restore_verify.py` line 15
-- **Issue:** `test_restore_task` is decorated with `@task()` in `tasks/test_restore_task.py`. When pytest imports it, the decorator causes pytest to look for a `database_path` fixture that doesn't exist in conftest.
-- **Impact:** 1 test errors out of 211 (210 pass). Does not affect production code.
-- **Fix needed:** Either remove `@task` decorator from the task definition in the test import path, or add a `database_path` fixture to `conftest.py`.
+- **Issue:** Previously, `test_restore_task` was named with a `test_` prefix and decorated with `@task()`. When pytest imported it, the decorator caused pytest to look for a `database_path` fixture that didn't exist in conftest.
+- **Resolution:** Renamed the task function to `restore_verify_task` (and the file to `restore_verify_task.py`) to prevent pytest from incorrectly discovering it as a test function. All tests now pass cleanly without any fixture lookup errors.
 
 ### 6.2 Loguru Rotation Issue on Linux (Dev-only)
 - Loguru file rotation uses `user.loguru_crtime` extended attribute which doesn't exist on all Linux filesystems.
@@ -468,7 +467,7 @@ AAM_BACKUP_V2/
 │   ├── preflight_task.py            # Pre-flight checks execution
 │   ├── report_task.py               # Weekly/monthly report generation
 │   ├── scan_task.py                 # Source drive scanning
-│   ├── test_restore_task.py         # Periodic random file verification
+│   ├── restore_verify_task.py       # Periodic random file verification
 │   ├── verification_task.py         # Cloud integrity verification (rclone check)
 │   └── vss_task.py                  # VSS snapshot create/delete
 │

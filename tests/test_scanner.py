@@ -247,3 +247,62 @@ def test_scan_empty_directory_handled(source_dir, temp_db):
     result = scan_drive(config, temp_db)
     assert len(result.new_files) == 0
     assert len(result.cannot_read) == 0
+
+
+def test_scan_full_rescan_checksums_all_files(source_dir, temp_db):
+    """Full re-scan computes checksums for ALL files, not just changed ones."""
+    test_file = source_dir / "file.txt"
+    test_file.write_text("original", encoding="utf-8")
+
+    config = AppConfig(
+        firm={"name": "Test"},
+        paths={
+            "source_drive": str(source_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(source_dir / "logs"),
+            "database_path": str(source_dir / "manifest.db"),
+        },
+        wol={"enabled": False},
+        cloud_backup={"enabled": False},
+    )
+
+    # First scan — file is new
+    scan_drive(config, temp_db)
+
+    # Second scan with full rescan — unchanged file gets checksum recomputed
+    result = scan_drive(config, temp_db, is_full_rescan=True)
+    # File content hasn't changed, so it should be counted as unchanged
+    assert len(result.modified_files) == 0
+    assert result.unchanged_count == 1
+
+
+def test_scan_full_rescan_detects_content_change(source_dir, temp_db):
+    """Full re-scan detects content changes even when size/mtime appear unchanged."""
+    import time
+    test_file = source_dir / "file.txt"
+    test_file.write_text("original content!!", encoding="utf-8")  # 18 bytes
+
+    config = AppConfig(
+        firm={"name": "Test"},
+        paths={
+            "source_drive": str(source_dir),
+            "lan_destination": "\\\\192.168.10.10\\test$",
+            "log_directory": str(source_dir / "logs"),
+            "database_path": str(source_dir / "manifest.db"),
+        },
+        wol={"enabled": False},
+        cloud_backup={"enabled": False},
+    )
+
+    # First scan
+    result1 = scan_drive(config, temp_db)
+    assert len(result1.new_files) == 1
+
+    # Wait for mtime to settle, then modify with same size
+    time.sleep(1.1)
+    test_file.write_text("modified content!!", encoding="utf-8")  # Also 18 bytes
+
+    # Full rescan — detects the content change via checksum
+    result_full = scan_drive(config, temp_db, is_full_rescan=True)
+    assert len(result_full.modified_files) == 1
+    assert result_full.unchanged_count == 0

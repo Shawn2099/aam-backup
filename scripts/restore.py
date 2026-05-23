@@ -134,17 +134,20 @@ def _restore_from_lan(config: dict, path: str, dest: str, full: bool, dry_run: b
         typer.echo(f"Error: Source not found in LAN backup: {src}")
         raise typer.Exit(1)
 
+    retry_count = config.get("lan_backup", {}).get("retry_count", 10)
+    retry_wait = config.get("lan_backup", {}).get("retry_wait_seconds", 5)
+
     cmd = [
         "robocopy",
         src,
         dst,
-        "/E",  # Copy subdirectories including empty
-        "/Z",  # Restartable mode
-        "/XJ",  # Exclude junction points
-        "/R:3",  # 3 retries
-        "/W:5",  # 5 second wait
-        "/NP",  # No progress
-        "/TEE",  # Output to console + log
+        "/E",
+        "/Z",
+        "/XJ",
+        f"/R:{retry_count}",
+        f"/W:{retry_wait}",
+        "/NP",
+        "/TEE",
     ]
 
     if dry_run:
@@ -186,21 +189,15 @@ def _restore_from_gcs(config: dict, path: str, dest: str, full: bool, dry_run: b
 
     # Write temp rclone config
     import tempfile
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
-        f.write(
-            "[gcs_backup]\n"
-            "type = google cloud storage\n"
-            f"service_account_file = {gcs_key}\n"
-            "bucket_policy_only = true\n"
-            f"location = {config['cloud_backup']['gcs_location']}\n"
-        )
-        temp_config = f.name
+    from core.rclone import _write_temp_config
+    temp_dir = Path(tempfile.gettempdir()) / "backup_agent_restore"
+    temp_config = _write_temp_config(temp_dir, "restore", gcs_key, config['cloud_backup']['gcs_location'])
 
     cmd = [
         "rclone", "sync",
         f"gcs_backup:{bucket}/{remote_prefix}",
         dst,
-        "--config", temp_config,
+        "--config", str(temp_config),
         "--progress",
     ]
 
@@ -246,18 +243,12 @@ def verify(
             typer.echo("FAIL: GCS key not found")
             raise typer.Exit(1)
 
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as f:
-            f.write(
-                "[gcs_backup]\n"
-                "type = google cloud storage\n"
-                f"service_account_file = {gcs_key}\n"
-                "bucket_policy_only = true\n"
-            )
-            temp_config = f.name
+        from core.rclone import _write_temp_config
+        temp_dir = Path(tempfile.gettempdir()) / "backup_agent_restore"
+        temp_config = _write_temp_config(temp_dir, "verify", gcs_key, config['cloud_backup']['gcs_location'])
 
         result = subprocess.run(
-            ["rclone", "lsd", f"gcs_backup:{bucket}:", "--config", temp_config],
+            ["rclone", "lsd", f"gcs_backup:{bucket}:", "--config", str(temp_config)],
             capture_output=True, text=True,
         )
         Path(temp_config).unlink(missing_ok=True)

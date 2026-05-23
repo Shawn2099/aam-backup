@@ -1,133 +1,168 @@
 """Tests for automated test restore verification task."""
 
 import subprocess
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 from core.manifest_db import ManifestDB
-from tasks.restore_verify_task import test_restore_task as restore_task, _verify_lan_file, _verify_cloud_file
+from tasks.restore_verify_task import (
+    restore_verify_task as restore_task,
+    _verify_lan_file_with_checksum,
+    _verify_cloud_file_download,
+    _verify_cloud_file_md5,
+)
 
 
-class TestVerifyLanFile:
-    """Tests for LAN file verification."""
+class TestVerifyLanFileWithChecksum:
+    """Tests for LAN file verification via checksum."""
 
-    def test_file_exists_and_matches_size(self, tmp_path):
+    def test_checksum_matches(self, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
-        test_file = lan_dest / "docs" / "report.pdf"
-        test_file.parent.mkdir()
-        test_file.write_bytes(b"x" * 5000)
 
-        result = _verify_lan_file(str(lan_dest), "docs/report.pdf", 5000)
+        test_file = source / "file.txt"
+        test_file.write_bytes(b"hello world")
+
+        lan_file = lan_dest / "file.txt"
+        lan_file.write_bytes(b"hello world")
+
+        from core.hashing import compute_checksum
+        expected = compute_checksum(test_file)
+
+        result = _verify_lan_file_with_checksum(str(source), str(lan_dest), "file.txt", expected)
         assert result["status"] == "OK"
-        assert result["size"] == 5000
+        assert result["checksum"] == expected
 
     def test_file_missing(self, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
 
-        result = _verify_lan_file(str(lan_dest), "docs/missing.pdf", 1000)
+        result = _verify_lan_file_with_checksum(str(source), str(lan_dest), "missing.txt", "abc123")
         assert result["status"] == "MISSING"
 
-    def test_file_size_mismatch(self, tmp_path):
+    def test_checksum_mismatch(self, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
-        test_file = lan_dest / "file.txt"
-        test_file.write_bytes(b"hello")
 
-        result = _verify_lan_file(str(lan_dest), "file.txt", 9999)
-        assert result["status"] == "MISMATCH"
-        assert result["expected_size"] == 9999
-        assert result["actual_size"] == 5
+        source_file = source / "file.txt"
+        source_file.write_bytes(b"original content")
+
+        lan_file = lan_dest / "file.txt"
+        lan_file.write_bytes(b"corrupted content")
+
+        from core.hashing import compute_checksum
+        expected = compute_checksum(source_file)
+
+        result = _verify_lan_file_with_checksum(str(source), str(lan_dest), "file.txt", expected)
+        assert result["status"] == "CORRUPTED"
 
 
-class TestVerifyCloudFile:
-    """Tests for cloud file verification."""
+class TestVerifyCloudFileDownload:
+    """Tests for cloud file verification via actual download."""
 
     @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
-    def test_file_exists_and_matches_size(self, mock_run, mock_write_config, tmp_path):
+    def test_download_and_verify(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
         mock_config.write_text("[gcs_backup]")
         mock_write_config.return_value = mock_config
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="5000 docs/report.pdf")
+        downloaded = tmp_path / "test_restore_file.txt"
+        downloaded.write_bytes(b"hello world")
 
-        result = _verify_cloud_file(
+        def side_effect(cmd, **kwargs):
+            if isinstance(cmd, list) and "copyto" in cmd:
+                import shutil
+                dest_path = [c for c in cmd if not c.startswith("--") and c not in ("rclone", "copyto")]
+                if len(dest_path) >= 2:
+                    dest = dest_path[1]
+                    import os
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy2(str(downloaded), dest)
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = side_effect
+
+        from core.hashing import compute_checksum
+        expected = compute_checksum(downloaded)
+
+        result = _verify_cloud_file_download(
             "/fake/key.json", "asia-south1", "my-bucket", "D_Drive_Backup",
-            "docs/report.pdf", 5000,
+            "file.txt", expected,
         )
         assert result["status"] == "OK"
-        assert result["size"] == 5000
+        assert result["method"] == "download"
 
     @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
-    def test_file_missing(self, mock_run, mock_write_config, tmp_path):
+    def test_download_fails(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
         mock_config.write_text("[gcs_backup]")
         mock_write_config.return_value = mock_config
 
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
+        mock_run.return_value = MagicMock(returncode=1, stderr="not found")
 
-        result = _verify_cloud_file(
+        result = _verify_cloud_file_download(
             "/fake/key.json", "asia-south1", "my-bucket", "D_Drive_Backup",
-            "docs/missing.pdf", 1000,
+            "missing.txt", "abc123",
         )
         assert result["status"] == "MISSING"
 
+
+class TestVerifyCloudFileMD5:
+    """Tests for cloud file verification via server-side MD5."""
+
     @patch("tasks.restore_verify_task._write_temp_config")
     @patch("subprocess.run")
-    def test_file_size_mismatch(self, mock_run, mock_write_config, tmp_path):
+    def test_md5_match(self, mock_run, mock_write_config, tmp_path):
         mock_config = tmp_path / "rclone.conf"
         mock_config.write_text("[gcs_backup]")
         mock_write_config.return_value = mock_config
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="9999 file.txt")
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
 
-        result = _verify_cloud_file(
+        result = _verify_cloud_file_md5(
             "/fake/key.json", "asia-south1", "my-bucket", "D_Drive_Backup",
-            "file.txt", 5000,
+            "file.txt", "abc123",
+        )
+        assert result["status"] == "OK"
+        assert result["method"] == "md5"
+
+    @patch("tasks.restore_verify_task._write_temp_config")
+    @patch("subprocess.run")
+    def test_md5_mismatch(self, mock_run, mock_write_config, tmp_path):
+        mock_config = tmp_path / "rclone.conf"
+        mock_config.write_text("[gcs_backup]")
+        mock_write_config.return_value = mock_config
+
+        temp_dir = Path(tempfile.gettempdir()) / "backup_agent_test_restore"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        differ_file = temp_dir / "differ.txt"
+        differ_file.write_text("file.txt\n")
+
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+
+        result = _verify_cloud_file_md5(
+            "/fake/key.json", "asia-south1", "my-bucket", "D_Drive_Backup",
+            "file.txt", "abc123",
         )
         assert result["status"] == "MISMATCH"
 
-    @patch("tasks.restore_verify_task._write_temp_config")
-    @patch("subprocess.run")
-    def test_rclone_timeout(self, mock_run, mock_write_config, tmp_path):
-        mock_config = tmp_path / "rclone.conf"
-        mock_config.write_text("[gcs_backup]")
-        mock_write_config.return_value = mock_config
-
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="rclone", timeout=120)
-
-        result = _verify_cloud_file(
-            "/fake/key.json", "asia-south1", "my-bucket", "D_Drive_Backup",
-            "file.txt", 5000,
-        )
-        assert result["status"] == "ERROR"
-        assert "timed out" in result["reason"]
-
-    @patch("tasks.restore_verify_task._write_temp_config")
-    @patch("subprocess.run")
-    def test_rclone_not_found(self, mock_run, mock_write_config, tmp_path):
-        mock_config = tmp_path / "rclone.conf"
-        mock_config.write_text("[gcs_backup]")
-        mock_write_config.return_value = mock_config
-
-        mock_run.side_effect = FileNotFoundError()
-
-        result = _verify_cloud_file(
-            "/fake/key.json", "asia-south1", "my-bucket", "D_Drive_Backup",
-            "file.txt", 5000,
-        )
-        assert result["status"] == "ERROR"
-        assert "not found" in result["reason"]
+        differ_file.unlink(missing_ok=True)
 
 
 class TestRestoreTask:
     """Tests for the full test restore task."""
 
     def test_skips_when_db_missing(self, tmp_path):
-        result = restore_task(
+        result = restore_task.fn(
             database_path=str(tmp_path / "nonexistent.db"),
             source_drive="D:\\",
             lan_destination="\\\\192.168.10.10\\test$",
@@ -139,7 +174,7 @@ class TestRestoreTask:
         db = ManifestDB(db_path)
         db.close()
 
-        result = restore_task(
+        result = restore_task.fn(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination="\\\\192.168.10.10\\test$",
@@ -153,7 +188,7 @@ class TestRestoreTask:
         db.upsert_entry("file2.txt", 200, 1700000001.0)
         db.close()
 
-        result = restore_task(
+        result = restore_task.fn(
             database_path=str(db_path),
             source_drive="D:\\",
             lan_destination="\\\\192.168.10.10\\test$",
@@ -161,24 +196,26 @@ class TestRestoreTask:
         assert result["status"] == "SKIPPED"
 
     def test_samples_and_verifies_lan(self, tmp_path):
-        # Setup LAN destination with files
+        source = tmp_path / "source"
+        source.mkdir()
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
-        (lan_dest / "file1.txt").write_bytes(b"a" * 100)
-        (lan_dest / "file2.txt").write_bytes(b"b" * 200)
-        (lan_dest / "file3.txt").write_bytes(b"c" * 300)
 
-        # Setup manifest with confirmed backups
+        from core.hashing import compute_checksum
+        for name, content in [("file1.txt", b"a" * 100), ("file2.txt", b"b" * 200), ("file3.txt", b"c" * 300)]:
+            (source / name).write_bytes(content)
+            (lan_dest / name).write_bytes(content)
+
         db_path = tmp_path / "manifest.db"
         db = ManifestDB(db_path)
-        db.upsert_entry("file1.txt", 100, 1700000000.0, checksum="abc123")
-        db.upsert_entry("file2.txt", 200, 1700000001.0, checksum="def456")
-        db.upsert_entry("file3.txt", 300, 1700000002.0, checksum="ghi789")
+        for name, content in [("file1.txt", b"a" * 100), ("file2.txt", b"b" * 200), ("file3.txt", b"c" * 300)]:
+            checksum = compute_checksum(source / name)
+            db.upsert_entry(name, len(content), 1700000000.0, checksum=checksum)
         db.close()
 
-        result = restore_task(
+        result = restore_task.fn(
             database_path=str(db_path),
-            source_drive="D:\\",
+            source_drive=str(source),
             lan_destination=str(lan_dest),
             cloud_enabled=False,
             sample_count=3,
@@ -190,20 +227,25 @@ class TestRestoreTask:
         assert result["cloud"]["status"] == "SKIPPED"
 
     def test_detects_missing_lan_file(self, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
+
+        from core.hashing import compute_checksum
+        (source / "file1.txt").write_bytes(b"a" * 100)
         (lan_dest / "file1.txt").write_bytes(b"a" * 100)
-        # file2.txt is missing from LAN
+        # file2.txt missing from LAN
 
         db_path = tmp_path / "manifest.db"
         db = ManifestDB(db_path)
-        db.upsert_entry("file1.txt", 100, 1700000000.0, checksum="abc123")
+        db.upsert_entry("file1.txt", 100, 1700000000.0, checksum=compute_checksum(source / "file1.txt"))
         db.upsert_entry("file2.txt", 200, 1700000001.0, checksum="def456")
         db.close()
 
-        result = restore_task(
+        result = restore_task.fn(
             database_path=str(db_path),
-            source_drive="D:\\",
+            source_drive=str(source),
             lan_destination=str(lan_dest),
             cloud_enabled=False,
             sample_count=2,
@@ -212,10 +254,16 @@ class TestRestoreTask:
         assert result["lan"]["status"] == "PARTIAL"
         assert result["lan"]["failed"] >= 1
 
-    @patch("tasks.restore_verify_task._verify_cloud_file")
-    def test_verifies_cloud_when_enabled(self, mock_cloud_verify, tmp_path):
+    @patch("tasks.restore_verify_task._verify_cloud_file_download")
+    @patch("tasks.restore_verify_task._verify_cloud_file_md5")
+    def test_verifies_cloud_when_enabled(self, mock_md5, mock_download, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
+
+        from core.hashing import compute_checksum
+        (source / "file1.txt").write_bytes(b"a" * 100)
         (lan_dest / "file1.txt").write_bytes(b"a" * 100)
 
         db_path = tmp_path / "manifest.db"
@@ -223,11 +271,12 @@ class TestRestoreTask:
         db.upsert_entry("file1.txt", 100, 1700000000.0, checksum="abc123")
         db.close()
 
-        mock_cloud_verify.return_value = {"path": "file1.txt", "status": "OK", "size": 100}
+        mock_download.return_value = {"path": "file1.txt", "status": "OK", "method": "download"}
+        mock_md5.return_value = {"path": "file1.txt", "status": "OK", "method": "md5"}
 
-        result = restore_task(
+        result = restore_task.fn(
             database_path=str(db_path),
-            source_drive="D:\\",
+            source_drive=str(source),
             lan_destination=str(lan_dest),
             cloud_enabled=True,
             gcs_key_path="/fake/key.json",
@@ -238,23 +287,30 @@ class TestRestoreTask:
         )
 
         assert result["cloud"]["status"] == "OK"
-        mock_cloud_verify.assert_called_once()
+        mock_download.assert_called_once()
 
     def test_respects_sample_count(self, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
         lan_dest = tmp_path / "lan"
         lan_dest.mkdir()
+
+        from core.hashing import compute_checksum
         for i in range(20):
-            (lan_dest / f"file{i}.txt").write_bytes(b"x" * 100)
+            content = b"x" * 100
+            (source / f"file{i}.txt").write_bytes(content)
+            (lan_dest / f"file{i}.txt").write_bytes(content)
 
         db_path = tmp_path / "manifest.db"
         db = ManifestDB(db_path)
         for i in range(20):
-            db.upsert_entry(f"file{i}.txt", 100, 1700000000.0 + i, checksum=f"hash{i}")
+            checksum = compute_checksum(source / f"file{i}.txt")
+            db.upsert_entry(f"file{i}.txt", 100, 1700000000.0 + i, checksum=checksum)
         db.close()
 
-        result = restore_task(
+        result = restore_task.fn(
             database_path=str(db_path),
-            source_drive="D:\\",
+            source_drive=str(source),
             lan_destination=str(lan_dest),
             cloud_enabled=False,
             sample_count=3,

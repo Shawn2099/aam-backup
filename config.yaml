@@ -52,6 +52,7 @@ backup_scope:
     - "~$*"
     - "desktop.ini"
     - "Thumbs.db"
+  full_rescan_every_n_runs: 30
 
 # ═══════════════════════════════════════════════════
 # LAN BACKUP
@@ -134,6 +135,8 @@ alerts:
   no_changes_warning_days: 7
   lan_free_space_warning_gb: 50
   backup_duration_warning_minutes: 180
+  backup_not_run_warning_days: 2
+  source_free_space_warning_gb: 5
 
 # ═══════════════════════════════════════════════════
 # TEST RESTORE — Periodic random file verification
@@ -142,3 +145,49 @@ test_restore:
   enabled: true
   sample_count: 10
   run_every_n_backups: 7
+
+# ═══════════════════════════════════════════════════
+# RECONCILIATION — Periodic destination audit (D-003)
+# ═══════════════════════════════════════════════════
+reconciliation:
+  enabled: true
+  run_every_n_backups: 7
+  auto_correct: true
+
+# ═══════════════════════════════════════════════════
+# MANIFEST BACKUP — WAL checkpoint, SHA256, retention (D-008)
+# ═══════════════════════════════════════════════════
+manifest_backup:
+  enabled: true
+  lan_path: "_manifest/"
+  cloud_path: "_manifest/"
+  retention_count: 7
+
+# ═══════════════════════════════════════════════════
+# CLOUD ARCHIVE — Yearly FY data move (GCS)
+# ═══════════════════════════════════════════════════
+cloud_archive:
+  enabled: true
+  trigger_date: "04-01"
+  active_path: "D_Drive_Backup/active/"
+  archive_path: "D_Drive_Backup/archive/"
+  storage_class: "ARCHIVE"
+
+# ═══════════════════════════════════════════════════
+# ANOMALY DETECTION — File count spike/silence detection
+# ═══════════════════════════════════════════════════
+anomaly_detection:
+  enabled: true
+  max_file_count_spike_ratio: 5.0
+  max_deletion_spike_ratio: 10.0
+  silence_days_alert: 7
+  lookback_window_days: 14
+
+# ═══════════════════════════════════════════════════
+# LAN INTEGRITY — Periodic full checksum audit
+# ═══════════════════════════════════════════════════
+lan_integrity:
+  enabled: true
+  run_every_n_backups: 7
+  sample_count: 500
+  checksum_concurrency: 4

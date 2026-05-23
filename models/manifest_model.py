@@ -1,7 +1,7 @@
 """SQLAlchemy model for the file manifest database."""
 
-from sqlalchemy import BigInteger, Column, Index, Integer, REAL, Text, create_engine, event
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy import BigInteger, Index, Integer, REAL, Text, create_engine, event
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, Mapped, mapped_column
 
 PENDING_CHECKSUM = "pending"
 """Sentinel value for files whose checksum has not been computed yet."""
@@ -14,16 +14,16 @@ class Base(DeclarativeBase):
 class FileManifest(Base):
     __tablename__ = "file_manifest"
 
-    file_id = Column(Text, primary_key=True)
-    relative_path = Column(Text, nullable=False, unique=True)
-    file_size = Column(BigInteger, nullable=False)
-    last_modified_timestamp = Column(REAL, nullable=False)
-    checksum = Column(Text, nullable=False, default=PENDING_CHECKSUM)
-    last_seen_at = Column(Text, nullable=False)
-    last_backed_up_lan = Column(Text, nullable=True)
-    last_backed_up_cloud = Column(Text, nullable=True)
-    backed_up_to_lan = Column(Integer, nullable=False, default=0)
-    backed_up_to_cloud = Column(Integer, nullable=False, default=0)
+    file_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_modified_timestamp: Mapped[float] = mapped_column(REAL, nullable=False)
+    checksum: Mapped[str] = mapped_column(Text, nullable=False, default=PENDING_CHECKSUM)
+    last_seen_at: Mapped[str] = mapped_column(Text, nullable=False)
+    last_backed_up_lan: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_backed_up_cloud: Mapped[str | None] = mapped_column(Text, nullable=True)
+    backed_up_to_lan: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backed_up_to_cloud: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     __table_args__ = (
         Index("idx_manifest_relative_path", "relative_path"),
