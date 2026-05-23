@@ -1382,28 +1382,33 @@ def run_preflight_checks(config: dict) -> PreflightReport:
     report.checks.append(check_source_drive(paths.get("source_drive", "")))
     if config.get("lan_backup", {}).get("enabled", False):
         lan_free_gb = float(config.get("alerts", {}).get("lan_free_space_warning_gb", 50.0))
-        report.checks.append(
-            check_lan_destination(
-                paths.get("lan_destination", ""),
-                wol.get("server_ip", ""),
-                min_free_gb=lan_free_gb,
+
+        # When WoL is enabled, the server may be sleeping — skip LAN destination
+        # checks here. WoL's ensure_server_online() handles connectivity at backup time.
+        if not config.get("wol", {}).get("enabled", False):
+            report.checks.append(
+                check_lan_destination(
+                    paths.get("lan_destination", ""),
+                    wol.get("server_ip", ""),
+                    min_free_gb=lan_free_gb,
+                )
             )
-        )
-        # GAP #4: Check LAN destination has enough capacity for source data
-        report.checks.append(
-            check_lan_destination_capacity(
-                paths.get("source_drive", ""),
-                paths.get("lan_destination", ""),
-                min_free_gb=lan_free_gb,
+            report.checks.append(
+                check_lan_destination_capacity(
+                    paths.get("source_drive", ""),
+                    paths.get("lan_destination", ""),
+                    min_free_gb=lan_free_gb,
+                )
             )
-        )
+        else:
+            logger.debug("WoL enabled — skipping LAN destination preflight checks")
     report.checks.append(check_temp_directory(paths.get("rclone_temp_directory", "")))
     # Use configurable source free space threshold (D-005)
     source_free_gb = config.get("alerts", {}).get("source_free_space_warning_gb", 5.0)
     report.checks.append(check_disk_space(paths.get("source_drive", ""), min_free_gb=float(source_free_gb)))
 
-    # Network — ping LAN only if WoL or LAN backup is enabled
-    if config.get("wol", {}).get("enabled", False) or config.get("lan_backup", {}).get("enabled", False):
+    # Network — skip all network checks if WoL is enabled (server expected offline)
+    if not config.get("wol", {}).get("enabled", False):
         server_ip = wol.get("server_ip", "")
         if server_ip:
             report.checks.append(check_ping(server_ip, count=2))
