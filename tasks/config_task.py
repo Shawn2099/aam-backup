@@ -30,7 +30,11 @@ def load_config_task(config_path: str) -> tuple[AppConfig, str]:
     logger.info(f"Loading configuration from {config_path}")
 
     config = load_config(config_path)
-    gcs_key_path = get_gcs_key_path(config.cloud_credentials.credential_name)
+
+    if config.cloud_backup.enabled:
+        gcs_key_path = get_gcs_key_path(config.cloud_credentials.credential_name)
+    else:
+        gcs_key_path = ""
 
     logger.info(f"Configuration loaded for firm: {config.firm.name}")
     return config, gcs_key_path
