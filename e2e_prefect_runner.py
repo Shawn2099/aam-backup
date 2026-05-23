@@ -1,7 +1,7 @@
 """E2E Prefect Flow Runner - validates full nightly_backup() flow with ephemeral server.
 
 Usage:
-    C:\BackupAgent\venv\Scripts\python.exe e2e_prefect_runner.py C:\BackupAgent\config.yaml
+    C:\...\venv\Scripts\python.exe e2e_prefect_runner.py config.yaml
 """
 
 import sys
@@ -43,7 +43,8 @@ def warn(text: str) -> None:
 def main() -> int:
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
 
-    os.environ["PREFECT_HOME"] = r"C:\BackupAgent\prefect"
+    project_dir = Path(__file__).resolve().parent
+    os.environ["PREFECT_HOME"] = str(project_dir / "prefect")
     os.environ["PREFECT_SERVER_ALLOW_EPHEMERAL_MODE"] = "true"
     os.environ["PREFECT_API_URL"] = "http://127.0.0.1:4200/api"
 
@@ -79,7 +80,7 @@ def main() -> int:
     header("START PREFECT SERVER")
     print("  Starting prefect server on 127.0.0.1:4200...")
     server = subprocess.Popen(
-        [r"C:\BackupAgent\venv\Scripts\prefect.exe", "server", "start",
+        [str(project_dir / "venv" / "Scripts" / "prefect.exe"), "server", "start",
          "--host", "0.0.0.0", "--port", "4200"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
