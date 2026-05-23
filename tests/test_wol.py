@@ -42,16 +42,16 @@ def test_send_magic_packet_error():
 
 
 def test_ensure_server_online_already_up(temp_config):
-    """Online server: ping succeeds, WoL packet NOT sent."""
+    """Online server: SMB port open, WoL packet NOT sent."""
     temp_config.wol.enabled = True
     temp_config.wol.server_ip = "127.0.0.1"
 
-    with patch("core.wol.ping_host", return_value=True):
+    with patch("core.wol._smb_port_open", return_value=True):
         assert ensure_server_online(temp_config) is True
 
 
 def test_ensure_server_online_wol_needed(temp_config):
-    """Offline server: ping fails, WoL packet sent, polling starts."""
+    """Offline server: SMB port closed, WoL packet sent, then port opens."""
     temp_config.wol.enabled = True
     temp_config.wol.server_ip = "192.168.10.10"
     temp_config.wol.mac_address = "00:11:22:33:44:55"
@@ -60,11 +60,11 @@ def test_ensure_server_online_wol_needed(temp_config):
 
     call_count = [0]
 
-    def mock_ping(ip):
+    def mock_smb(ip):
         call_count[0] += 1
         return call_count[0] >= 2  # Fail first, succeed second
 
-    with patch("core.wol.ping_host", side_effect=mock_ping):
+    with patch("core.wol._smb_port_open", side_effect=mock_smb):
         with patch("core.wol.send_magic_packet") as mock_wol:
             assert ensure_server_online(temp_config) is True
             mock_wol.assert_called_once()
@@ -78,15 +78,15 @@ def test_ensure_server_online_timeout(temp_config):
     temp_config.wol.wake_timeout_seconds = 2
     temp_config.wol.ping_interval_seconds = 1
 
-    with patch("core.wol.ping_host", return_value=False):
+    with patch("core.wol._smb_port_open", return_value=False):
         with pytest.raises(WolTimeout):
             ensure_server_online(temp_config)
 
 
 def test_ensure_server_online_wol_disabled(temp_config):
-    """WoL disabled: returns True without ping."""
+    """WoL disabled: returns True without checking."""
     temp_config.wol.enabled = False
 
-    with patch("core.wol.ping_host") as mock_ping:
+    with patch("core.wol._smb_port_open") as mock_smb:
         assert ensure_server_online(temp_config) is True
-        mock_ping.assert_not_called()
+        mock_smb.assert_not_called()

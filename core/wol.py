@@ -1,8 +1,9 @@
-"""Wake-on-LAN module — ping check and magic packet sending."""
+"""Wake-on-LAN module — SMB reachability check and magic packet sending."""
 
 import platform
 import subprocess
 import time
+import socket
 
 import typer
 from loguru import logger
@@ -19,6 +20,23 @@ class WolError(Exception):
 class WolTimeout(WolError):
     """Raised when the server does not respond within the timeout."""
     pass
+
+
+def _smb_port_open(server_ip: str, port: int = 445, timeout: float = 5.0) -> bool:
+    """Check SMB port via TCP connect.
+
+    More reliable than ping — TCP SYN proves the host and service are alive.
+    No proxy-ARP false positives, no auth needed.
+    """
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((server_ip, port))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
 
 
 def ping_host(ip: str, timeout: int = 5) -> bool:
@@ -70,10 +88,7 @@ def send_magic_packet(mac_address: str, server_ip: str = "255.255.255.255", port
 
 
 def _derive_broadcast(ip: str) -> str:
-    """Derive the broadcast address from an IP assuming a /24 subnet."""
-    parts = ip.rsplit(".", 1)
-    if len(parts) == 2:
-        return f"{parts[0]}.255"
+    """Always use global broadcast for WoL — most reliable across subnets."""
     return "255.255.255.255"
 
 
@@ -102,29 +117,27 @@ def ensure_server_online(config: AppConfig) -> bool:
         logger.debug("WoL disabled, assuming server is online")
         return True
 
-    # Initial ping check
-    if ping_host(wol_config.server_ip):
-        logger.info(f"Backup server {wol_config.server_ip} is already online")
+    server_ip = wol_config.server_ip
+
+    # SMB port check — confirms the actual server is up with file services ready
+    if _smb_port_open(server_ip):
+        logger.info(f"Backup server {server_ip} SMB port accessible")
         return True
 
-    logger.info(f"Backup server {wol_config.server_ip} is offline, sending WoL...")
-    broadcast_ip = _derive_broadcast(wol_config.server_ip)
-    logger.debug(f"Broadcast address derived: {broadcast_ip}")
-    send_magic_packet(wol_config.mac_address, broadcast_ip)
+    logger.info(f"Backup server {server_ip} offline, sending WoL...")
+    send_magic_packet(wol_config.mac_address, "255.255.255.255")
 
-    # Poll until server responds or timeout
     start_time = time.time()
     while time.time() - start_time < wol_config.wake_timeout_seconds:
         time.sleep(wol_config.ping_interval_seconds)
-        if ping_host(wol_config.server_ip):
-            logger.info(f"Backup server {wol_config.server_ip} responded to ping")
-            # Stability buffer — wait for services to fully initialize
+        if _smb_port_open(server_ip):
+            logger.info(f"Backup server {server_ip} SMB port accessible after WoL")
             logger.debug(f"Waiting {wol_config.stability_wait_seconds}s for stability")
             time.sleep(wol_config.stability_wait_seconds)
             return True
 
     raise WolTimeout(
-        f"Backup server {wol_config.server_ip} did not respond within "
+        f"Backup server {server_ip} SMB port not accessible within "
         f"{wol_config.wake_timeout_seconds}s after WoL"
     )
 
