@@ -429,7 +429,7 @@ def _run_anomaly_check(config, config_path: str, flow_run_id: str) -> dict | Non
 
 @flow(
     name="nightly-backup",
-    flow_run_name="backup-{config_path}-{date:%Y%m%d-%H%M%S}",
+    flow_run_name=None,
     log_prints=True,
     version="1.3.0",
     timeout_seconds=28800,  # 8 hours max
