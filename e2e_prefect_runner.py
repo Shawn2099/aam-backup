@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 RED = "\033[91m"
 GREEN = "\033[92m"
+YELLOW = "\033[93m"
 CYAN = "\033[96m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
@@ -33,6 +34,10 @@ def ok(text: str) -> None:
 
 def fail(text: str) -> None:
     print(f"  {RED}FAIL{RESET}  {text}")
+
+
+def warn(text: str) -> None:
+    print(f"  {YELLOW}WARN{RESET}  {text}")
 
 
 def main() -> int:
@@ -57,15 +62,18 @@ def main() -> int:
     ok("Cleaned manifest.db + WAL/SHM")
 
     lan_dest = Path(config.paths.lan_destination)
-    if lan_dest.exists():
-        for item in lan_dest.iterdir():
-            if item.is_dir():
-                shutil.rmtree(str(item))
-            else:
-                item.unlink()
-        ok(f"Cleaned LAN destination: {lan_dest}")
-    else:
-        lan_dest.mkdir(parents=True, exist_ok=True)
+    try:
+        if lan_dest.exists():
+            for item in lan_dest.iterdir():
+                if item.is_dir():
+                    shutil.rmtree(str(item))
+                else:
+                    item.unlink()
+            ok(f"Cleaned LAN destination: {lan_dest}")
+        else:
+            lan_dest.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        warn(f"Skipping LAN clean (no SMB auth): {lan_dest}")
 
     # Start Prefect server
     header("START PREFECT SERVER")
