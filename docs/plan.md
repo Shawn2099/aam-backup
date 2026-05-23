@@ -59,7 +59,7 @@ Phase 1 automates what the client currently does manually: copy changed files fr
 
 **[PHASE 1]** Both destinations run simultaneously and independently every night at 23:00 local server time.
 
-**[PHASE 1]** Wake-on-LAN to power on backup server if offline. No automatic shutdown (DNS risk).
+**[PHASE 1]** Wake-on-LAN to power on backup server if offline. Automatic shutdown after backup completes (configurable, off by default).
 
 **[PHASE 1]** Change Detection Engine tracking which files changed since last backup via SQLite manifest.
 
@@ -81,7 +81,7 @@ Phase 1 automates what the client currently does manually: copy changed files fr
 
 **[PHASE 2 ONLY]** Full UI dashboard — backup history table, restore interface, log viewer, audit report.
 
-**[PHASE 2 ONLY]** Automatic backup server shutdown.
+**[PHASE 1]** Automatic backup server shutdown after LAN backup (configurable via `lan_backup.shutdown_after_backup`, defaults to false). Sends `shutdown /s /t 300 /f` to the backup server with 5-minute warning so staff can cancel if needed.
 
 **[PHASE 2 ONLY]** SMART disk health monitoring.
 
@@ -1823,8 +1823,12 @@ On LAN_PARTIAL or CLOUD_PARTIAL, all changed files are marked as backed up in ma
 **No pre-flight checks:**
 If backup server disk is full, GCS quota exceeded, or network is down, the job fails mid-run. Pre-flight checks (disk space, GCS quota, connectivity, service account validation) will be added after core backup logic is complete and tested.
 
-**No automatic backup server shutdown:**
-DNS server role prevents automatic shutdown. Staff manually power off after backup completes.
+**Automatic backup server shutdown (configurable):**
+Controlled by `lan_backup.shutdown_after_backup` (default: false). When enabled, sends
+`shutdown /s /t 300 /f` to the backup server after LAN backup completes. The 5-minute
+delay allows staff to cancel with `shutdown /a` if needed. Disabled by default because
+the backup server may also serve DNS. Only enable if DNS risk is acceptable or DNS role
+has been moved.
 
 **No integrity verification:**
 Silent disk corruption on backup server is not detected until a restore attempt. GCS checksums verify cloud integrity. LAN integrity relies on filesystem-level checks (chkdsk, SMART monitoring).

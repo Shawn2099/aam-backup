@@ -114,6 +114,7 @@ class LanBackupConfig(BaseModel):
     retry_count: int = Field(default=3, ge=1, le=10)
     retry_wait_seconds: int = Field(default=10, ge=1, le=300)
     subprocess_timeout_seconds: int = Field(default=14400, ge=3600)
+    shutdown_after_backup: bool = False
 
 
 class WolConfig(BaseModel):

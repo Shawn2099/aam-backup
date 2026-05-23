@@ -32,6 +32,7 @@ from tasks.report_task import generate_report_task
 from tasks.reconciliation_task import reconciliation_task
 from tasks.restore_verify_task import restore_verify_task
 from tasks.scan_task import scan_task
+from tasks.shutdown_server_task import shutdown_server_task
 from tasks.stale_backup_task import check_stale_backup_task
 from tasks.verification_task import verify_cloud_integrity_task
 from tasks.vss_task import create_vss_snapshot_task, delete_vss_snapshot_task
@@ -1041,6 +1042,16 @@ def nightly_backup(config_path: str = "config.yaml") -> str:
             )
         except Exception as e:
             logger.warning(f"Config backup failed (non-critical): {e}")
+
+        # Shutdown backup server after successful LAN backup (if enabled)
+        try:
+            shutdown_result = shutdown_server_task(config.model_dump())
+            if shutdown_result.get("shutdown_initiated"):
+                logger.info(
+                    f"Backup server {shutdown_result.get('server_ip')} shutting down in 5 minutes"
+                )
+        except Exception as e:
+            logger.warning(f"Server shutdown failed (non-critical): {e}")
 
         # Build run summary for enriched email notifications and reports
         try:
