@@ -309,12 +309,12 @@ def test_check_ping_success():
 
 
 def test_check_ping_failure():
-    """check_ping fails when ping fails."""
+    """check_ping returns WARN when ping fails."""
     with patch("platform.system", return_value="Linux"):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             result = check_ping("192.0.2.1", count=1)
-            assert result.severity == Severity.FAIL
+            assert result.severity == Severity.WARN
 
 
 def test_check_ping_timeout():
@@ -322,7 +322,7 @@ def test_check_ping_timeout():
     with patch("platform.system", return_value="Linux"):
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("ping", 10)):
             result = check_ping("192.0.2.1", count=1)
-            assert result.severity == Severity.FAIL
+            assert result.severity == Severity.WARN
             assert "timed out" in result.message
 
 
