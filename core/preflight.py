@@ -1381,10 +1381,12 @@ def run_preflight_checks(config: dict) -> PreflightReport:
     # Storage
     report.checks.append(check_source_drive(paths.get("source_drive", "")))
     if config.get("lan_backup", {}).get("enabled", False):
+        lan_free_gb = float(config.get("alerts", {}).get("lan_free_space_warning_gb", 50.0))
         report.checks.append(
             check_lan_destination(
                 paths.get("lan_destination", ""),
                 wol.get("server_ip", ""),
+                min_free_gb=lan_free_gb,
             )
         )
         # GAP #4: Check LAN destination has enough capacity for source data
@@ -1392,7 +1394,7 @@ def run_preflight_checks(config: dict) -> PreflightReport:
             check_lan_destination_capacity(
                 paths.get("source_drive", ""),
                 paths.get("lan_destination", ""),
-                min_free_gb=50.0,
+                min_free_gb=lan_free_gb,
             )
         )
     report.checks.append(check_temp_directory(paths.get("rclone_temp_directory", "")))
