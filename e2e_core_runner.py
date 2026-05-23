@@ -134,12 +134,28 @@ def main() -> int:
         print(f"  {RED}Output (last 2000 chars):{RESET}")
         print(f"  {robocopy_result.output[-2000:]}")
         failures += 1
+    elif robocopy_result.status in ("LAN_COMPLETE", "LAN_PARTIAL"):
+        all_changed = [f.relative_path for f in result.new_files + result.modified_files]
+        marked = db.batch_mark_lan_backed_up(all_changed)
+        ok(f"Marked {marked} manifest entries as LAN-backed-up")
 
     # ── Verify LAN Mirror ────────────────────────────────────────
     header("VERIFY LAN MIRROR")
     source = Path(config.paths.source_drive)
+    scope = config.backup_scope
+    exts = {e.lower() for e in scope.exclude_extensions}
 
-    # Build source file map: relative_path -> FileInfo
+    def _is_excluded_source_file(fpath: Path) -> bool:
+        """Apply same exclusions as scanner/robocopy to source file listing."""
+        if fpath.suffix.lower() in exts:
+            return True
+        from fnmatch import fnmatch
+        for pat in scope.exclude_patterns:
+            if fnmatch(fpath.name, pat):
+                return True
+        return False
+
+    # Build source file map (with exclusions matching Robocopy)
     source_files: dict[str, int] = {}
     for root, dirs, files in source.walk():
         dirs[:] = [d for d in dirs]
@@ -147,7 +163,8 @@ def main() -> int:
             fpath = root / fname
             try:
                 rel = str(fpath.relative_to(source))
-                source_files[rel] = fpath.stat().st_size
+                if not _is_excluded_source_file(fpath):
+                    source_files[rel] = fpath.stat().st_size
             except OSError:
                 pass
 
