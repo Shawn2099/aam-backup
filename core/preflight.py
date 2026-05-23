@@ -1400,8 +1400,11 @@ def run_preflight_checks(config: dict) -> PreflightReport:
     source_free_gb = config.get("alerts", {}).get("source_free_space_warning_gb", 5.0)
     report.checks.append(check_disk_space(paths.get("source_drive", ""), min_free_gb=float(source_free_gb)))
 
-    # Network
-    report.checks.append(check_ping(wol.get("server_ip", "127.0.0.1"), count=2))
+    # Network — ping LAN only if WoL or LAN backup is enabled
+    if config.get("wol", {}).get("enabled", False) or config.get("lan_backup", {}).get("enabled", False):
+        server_ip = wol.get("server_ip", "")
+        if server_ip:
+            report.checks.append(check_ping(server_ip, count=2))
     if cloud.get("enabled", False):
         report.checks.append(check_dns_resolution("storage.googleapis.com"))
 
@@ -1410,8 +1413,9 @@ def run_preflight_checks(config: dict) -> PreflightReport:
     if cloud.get("enabled", False):
         report.checks.append(check_rclone_version())
 
-    # Credentials
-    report.checks.append(check_credential_manager(config.get("cloud_credentials", {}).get("credential_name", "")))
+    # Credentials — skip if cloud is disabled (SSH sessions can't access Credential Manager)
+    if cloud.get("enabled", False):
+        report.checks.append(check_credential_manager(config.get("cloud_credentials", {}).get("credential_name", "")))
     report.checks.append(check_smtp_config(notifications))
 
     # Services
