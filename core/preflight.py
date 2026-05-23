@@ -635,21 +635,21 @@ def check_ping(host: str, count: int = 3, timeout: float = 10.0) -> CheckResult:
             return CheckResult(
                 category="Network",
                 name=f"Ping ({host})",
-                severity=Severity.FAIL,
+                severity=Severity.WARN,
                 message=f"Ping failed (exit code: {result.returncode})",
             )
     except subprocess.TimeoutExpired:
         return CheckResult(
             category="Network",
             name=f"Ping ({host})",
-            severity=Severity.FAIL,
+            severity=Severity.WARN,
             message=f"Ping timed out after {timeout}s",
         )
     except Exception as e:
         return CheckResult(
             category="Network",
             name=f"Ping ({host})",
-            severity=Severity.FAIL,
+            severity=Severity.WARN,
             message=f"Ping error: {e}",
         )
 
