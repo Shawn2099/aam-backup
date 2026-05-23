@@ -69,6 +69,14 @@ def send_magic_packet(mac_address: str, server_ip: str = "255.255.255.255", port
         raise WolError(f"Failed to send WoL packet: {e}")
 
 
+def _derive_broadcast(ip: str) -> str:
+    """Derive the broadcast address from an IP assuming a /24 subnet."""
+    parts = ip.rsplit(".", 1)
+    if len(parts) == 2:
+        return f"{parts[0]}.255"
+    return "255.255.255.255"
+
+
 def ensure_server_online(config: AppConfig) -> bool:
     """Ensure the backup server is online, using WoL if needed.
 
@@ -100,7 +108,9 @@ def ensure_server_online(config: AppConfig) -> bool:
         return True
 
     logger.info(f"Backup server {wol_config.server_ip} is offline, sending WoL...")
-    send_magic_packet(wol_config.mac_address, wol_config.server_ip)
+    broadcast_ip = _derive_broadcast(wol_config.server_ip)
+    logger.debug(f"Broadcast address derived: {broadcast_ip}")
+    send_magic_packet(wol_config.mac_address, broadcast_ip)
 
     # Poll until server responds or timeout
     start_time = time.time()
@@ -130,9 +140,9 @@ def ping(
 ):
     """Ping a host and report if it's reachable."""
     if ping_host(ip, timeout):
-        typer.echo(f"✅ {ip} is reachable")
+        typer.echo(f"[PASS] {ip} is reachable")
     else:
-        typer.echo(f"❌ {ip} is not reachable")
+        typer.echo(f"[FAIL] {ip} is not reachable")
         raise typer.Exit(1)
 
 
@@ -145,7 +155,7 @@ def wol(
     """Send a Wake-on-LAN magic packet."""
     typer.echo(f"Sending WoL packet to {mac} via {ip}:{port}")
     send_magic_packet(mac, ip, port)
-    typer.echo("✅ Packet sent")
+    typer.echo("[OK] Packet sent")
 
 
 if __name__ == "__main__":
