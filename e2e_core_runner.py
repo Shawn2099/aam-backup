@@ -1,4 +1,4 @@
-"""E2E Core Pipeline Runner — validates scan + robocopy + manifest + verify.
+"""E2E Core Pipeline Runner - validates scan + robocopy + manifest + verify.
 
 No Prefect. No Prefect imports. No GCS. Pure core pipeline validation.
 
